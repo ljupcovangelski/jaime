@@ -1,5 +1,11 @@
 #!/bin/sh
-# Dispatch wrapper to ensure the charm entrypoint runs with the system python3
-# This avoids relying on the executable bit or shebang of src/charm.py on the
-# target filesystem which in some environments can cause 'Permission denied'.
-exec python3 ./src/charm.py "$@"
+# Dispatch wrapper: prefer a packaged venv python if present, else fall back to system python3.
+# Typical charm layout places a venv at: ./venv/bin/python3 or ./parts/charm/install/venv/bin/python3
+for py in ./parts/*/install/venv/bin/python3 ./venv/bin/python3 /usr/bin/python3; do
+  if [ -x "$py" ]; then
+    exec "$py" ./src/charm.py "$@"
+  fi
+done
+
+echo "ERROR: no suitable python3 interpreter found" >&2
+exit 1

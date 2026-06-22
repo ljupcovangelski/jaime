@@ -1,0 +1,10 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jaime"
+version = "0.0.1"
+description = "Jaime Juju charm (scaffold)"
+requires-python = ">=3.8"
+dependencies = ["ops>=2.0.0"]
