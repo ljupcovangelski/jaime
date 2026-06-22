@@ -1,5 +1,0 @@
-#!/bin/sh
-# Dispatch wrapper to ensure the charm entrypoint runs with the system python3
-# This avoids relying on the executable bit or shebang of src/charm.py on the
-# target filesystem which in some environments can cause 'Permission denied'.
-exec python3 ./src/charm.py "$@"

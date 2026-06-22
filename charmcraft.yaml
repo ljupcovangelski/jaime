@@ -24,6 +24,10 @@ parts:
   charm:
     plugin: charm
     source: .
+    override-prime: |
+      craftctl default
+      chmod +x $CRAFT_PRIME/dispatch
+      chmod +x $CRAFT_PRIME/src/charm.py
 
 analysis:
   ignore:
