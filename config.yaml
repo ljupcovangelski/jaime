@@ -47,3 +47,11 @@ options:
     type: boolean
     description: "Whether AI-assisted report generation is enabled."
     default: false
+  diagnostics:
+    type: string
+    description: >
+      JSON monitoring plan describing what to collect (log files, processes,
+      env vars, network ports, systemd units, health commands). When empty,
+      Jaime attempts to generate this plan via AI on relation-joined. See
+      the diagnostic schema in src/jaime/diagnostics.py for the expected format.
+    default: ""
