@@ -17,26 +17,26 @@ Only logic for `observe` mode is added at this phase.
 
 ### 1.1. Charm skeleton
 
-- [ ] [charm] Add `charmcraft.yaml`
-- [ ] [charm] Add `metadata.yaml` for machine subordinate charm
-- [ ] [charm] Add `config.yaml`
-- [ ] [charm] Add `actions.yaml`
-- [ ] [charm] Add `src/charm.py`
-- [ ] [charm] Add basic charm unit status handling
-- [ ] [charm] Add relation handling for principal/subordinate relation
+- [x] [charm] Add `charmcraft.yaml`
+- [x] [charm] Add `metadata.yaml` for machine subordinate charm
+- [x] [charm] Add `config.yaml`
+- [x] [charm] Add `actions.yaml`
+- [x] [charm] Add `src/charm.py`
+- [x] [charm] Add basic charm unit status handling
+- [x] [charm] Add relation handling for principal/subordinate relation
 
 ### 1.2. Config
 
-- [ ] [charm] Add `mode`, default `observe`
-- [ ] [charm] Add `watch-statuses`, default `error,blocked`
-- [ ] [charm] Add `failure-timeout-minutes`, default `5`
-- [ ] [charm] Add `cooldown-minutes`, default `30`
-- [ ] [charm] Add `log-window-minutes`, default `30`
-- [ ] [charm] Add `max-context-lines`, default `500`
-- [ ] [charm] Add `provider`, default `none` or `gemini`
-- [ ] [charm] Add `model`
-- [ ] [charm] Add `ai-report-enabled`, default `false` initially
-- [ ] [charm] Add token/secret config only after non-AI observe path works
+- [x] [charm] Add `mode`, default `observe`
+- [x] [charm] Add `watch-statuses`, default `error,blocked`
+- [x] [charm] Add `failure-timeout-minutes`, default `5`
+- [x] [charm] Add `cooldown-minutes`, default `30`
+- [x] [charm] Add `log-window-minutes`, default `30`
+- [x] [charm] Add `max-context-lines`, default `500`
+- [x] [charm] Add `provider`, default `none` or `gemini`
+- [x] [charm] Add `model`
+- [x] [charm] Add `ai-report-enabled`, default `false` initially
+- [x] [charm] Add token/secret config only after non-AI observe path works
 
 ### 1.3. Incident tracking
 

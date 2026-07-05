@@ -5,6 +5,7 @@
 ### Features
 
 - Initial machine subordinate charm skeleton
+- Add `metadata.yaml` for machine subordinate charm
 
 ### Fixes
 

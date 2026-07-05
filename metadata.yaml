@@ -1,0 +1,10 @@
+name: jaime
+summary: Jaime — Juju AI Medic Engine
+description: |
+  Jaime is a Juju machine subordinate charm that observes related principal units,
+  collects bounded diagnostic context, and writes structured incident reports.
+subordinate: true
+requires:
+  principal:
+    interface: juju-info
+    scope: container
