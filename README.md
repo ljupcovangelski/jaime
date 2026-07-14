@@ -2,118 +2,148 @@
 
 Jaime is a headless Juju subordinate charm for local diagnostics and incident reporting on the same machine as a principal application charm.
 
-
 The phase-1 MVP focuses on **Observe mode**:
 
 - deploy Jaime alongside a principal machine charm, for example PostgreSQL or MySQL
-- monitor the principal unit status from Juju context
+- monitor the principal unit status from Juju context via `update-status`
 - detect unhealthy states such as `error` or `blocked`
 - wait for a configurable timeout before creating an incident report
-- collect compact local context from Juju, systemd, journal, disk, memory, and network state
+- collect diagnostics by iterating the monitoring plan, or fall back to broad commands (`ps aux`, `ss -tlnp`, etc.)
 - write structured JSONL audit logs
-- optionally call an AI provider such as Gemini to generate a Markdown report
-- do **not** perform remediation in phase-1 unless explicitly implemented later
-
-## Quickstart
-
-Setup environment
-
-```bash
-sudo snap install charmcraft --classic
-sudo snap install lxd
-sudo usermod -aG lxd $USER
-newgrp lxd
-```
-
-Pack the charm:
-
-```bash
-charmcraft pack
-juju deploy postgresql --channel 16/stable --to 0
-juju deploy ./jaime_ubuntu-24.04-amd64.charm
-juju relate postgresql jaime
-```
+- optionally call an AI provider (Gemini) for diagnosis suggestions
+- do **not** perform remediation in phase-1 unless explicitly enabled
 
 ## Scope
-
-The eventual goal is that Jaime attempts to fix infrastructure and environment issues, that are causing the principa charm to enter into an `error` state. Jaime shouldn't touch any of the principal charm's application code. Phase-1 is intentionally conservative. Jaime should first become a reliable observer and reporter before it becomes an automated remediation engine.
 
 Phase 1:
 
 - Juju machine subordinate charm
-- `update-status` based monitoring
-- Juju action based interaction
-- local log and host diagnostics collection
-- structured audit log
+- `update-status` based principal monitoring via goal-state
+- diagnostics monitoring plan (AI-generated or manually configured)
+- plan-driven context collection with broad fallback
+- incident lifecycle (open, timeout, collect, report, cooldown, recover)
 - Markdown incident report generation
-- AI provider abstraction, initially Gemini
+- Juju actions for diagnostics and report retrieval
+- structured JSONL audit logging
+- AI provider abstraction (Gemini) for suggest/act modes
+- 174 unit tests
 
 Out of scope for phase-1:
 
-- automatic remediation
+- automatic remediation (gated behind `mode: act`)
 - Kubernetes sidecar mode
 - Slack, Mattermost, GitHub, or ticketing integrations
 - controller API integration
-- broad arbitrary command execution
 - OpenClaw integration
 
-## First target behaviour
-
-The initial target workflow is:
+## Incident flow
 
 ```text
 Jaime deployed as subordinate
-→ identifies related principal unit
-→ checks principal status periodically
+→ identifies related principal unit via goal-state
+→ checks principal status on every update-status
 → detects watched status: error/blocked
 → tracks how long the unit remains unhealthy
-→ after timeout, collects diagnostics
-→ writes JSONL incident events
+→ after failure-timeout, opens an incident
+→ loads diagnostics plan (or uses broad fallback)
+→ collects per-plan context (logs, processes, systemd, ports, env vars)
+→ collects background context (juju logs, disk, memory)
 → writes Markdown report
-→ exposes report path/result via Juju action output
+→ writes JSONL audit events
+→ respects cooldown before next report
+→ closes incident on recovery
 ```
 
-## Example deployment
+## Quickstart
 
 ```bash
-juju deploy postgresql --channel 14/stable
-juju deploy ./jaime.charm
-juju integrate postgresql Jaime
+# Setup
+sudo snap install charmcraft --classic
+sudo snap install lxd
+sudo usermod -aG lxd $USER
+newgrp lxd
+
+# Deploy
+charmcraft pack
+juju deploy postgresql --channel 16/stable --to 0
+juju deploy ./jaime_ubuntu-24.04-amd64.charm
+juju relate postgresql jaime
+
+# Monitor
+juju status
+juju run jaime/0 show-status
 ```
 
-## Example actions
+## Actions
 
 ```bash
-juju run jaime/0 diagnose
-juju run jaime/0 collect-context
-juju run jaime/0 generate-report
-juju run jaime/0 list-reports
-juju run jaime/0 get-report
+juju run jaime/0 diagnose              # Basic principal info
+juju run jaime/0 collect-context       # Collect and return context bundle
+juju run jaime/0 generate-report       # Generate report for current open incident
+juju run jaime/0 get-suggestion        # Get AI suggestion for current incident
+juju run jaime/0 show-status           # Show monitoring state for all units
+juju run jaime/0 reset                 # Clear all incidents and start fresh
 ```
 
-A future phase may add:
+## Configuration
+
+| Key | Default | Description |
+|---|---|---|
+| `mode` | `observe` | `observe`, `suggest`, or `act` |
+| `provider` | `none` | AI provider (`none` or `gemini`) |
+| `api-token` | `""` | Juju secret reference for the AI token |
+| `watch-statuses` | `error,blocked` | Statuses that trigger an incident |
+| `failure-timeout-minutes` | `5` | How long a status must persist before reporting |
+| `cooldown-minutes` | `30` | Min time between reports for the same incident |
+| `log-window-minutes` | `30` | How far back to collect logs |
+| `max-context-lines` | `500` | Max lines per collected file/section |
+| `diagnostics` | `""` | JSON monitoring plan (empty = AI-generated on relation) |
+
+See `config.yaml` for full reference.
+
+## Diagnostics plan
+
+The diagnostics plan drives what gets collected. It can be:
+
+1. **AI-generated** — on `principal-relation-joined`, Jaime calls Gemini to build a plan for the workload
+2. **Manually configured** — set `diagnostics` config to a JSON monitoring plan
+3. **Empty** — Jaime falls back to broad commands (`ps aux`, `ss -tlnp`, `systemctl --failed`)
+
+Each plan section (`log_files`, `processes`, `systemd_units`, `network.ports`, `env_variables`) is iterated by the collector, and results appear in the report with status icons (✓/✗).
+
+See `examples/diagnostics.json` for a sample plan and `examples/report.md` for the generated report output.
+
+## Modes
+
+### observe (default)
+
+Collect context, generate reports, write audit logs. No AI interaction.
+
+### suggest
+
+Same as observe, but after generating the base report, calls the AI provider and appends a diagnosis section. No commands are executed.
+
+### act
+
+Same as suggest, but executes commands returned by the AI. Gated behind explicit opt-in. All executions are audited to the JSONL log.
+
+## Testing
 
 ```bash
-juju run jaime/0 remediate dry-run=true
-juju run jaime/0 remediate execute=true
+# Run all tests
+./scripts/test.sh
+
+# Run with coverage
+./scripts/test.sh --cov=src --cov-report=term
+
+# Run specific test file
+./scripts/test.sh tests/test_collector.py -v
 ```
 
-## Suggested MVP config
-
-```yaml
-mode: observe
-provider: gemini
-model: gemini-1.5-flash
-watch-statuses: error,blocked
-failure-timeout-minutes: 5
-cooldown-minutes: 30
-log-window-minutes: 30
-max-context-lines: 500
-ai-report-enabled: true
-```
+Tests auto-create a virtual environment in `.venv` on first run.
 
 ## Design principle
 
 Jaime should be boring, auditable, and safe.
 
-It should collect facts first, produce reports second, and only attempt changes in later phases with strict allowlists, dry-run support, and explicit operator intent.
+It collects facts first, produces reports second, and only attempts changes in later phases with strict allowlists, dry-run support, and explicit operator intent.
