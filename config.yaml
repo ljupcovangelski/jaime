@@ -1,7 +1,13 @@
 options:
   mode:
     type: string
-    description: "Operating mode. For phase-1 only 'observe' is supported."
+    description: >
+      Operating mode.
+      'observe': collect context and generate reports only.
+      'suggest': like observe, plus calls the AI provider to append diagnosis
+        and safe manual remediation suggestions to the report. Nothing is executed.
+      'act': like suggest, plus executes commands returned by the AI that match
+        the act-command-allowlist. All executions are audited.
     default: observe
   provider:
     type: string

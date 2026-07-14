@@ -41,7 +41,7 @@ class TestObserve:
     def test_same_status_new_since_clears_last_reported(self, tracker):
         """last_reported must be cleared on a new episode."""
         tracker.observe("postgresql/0", "blocked", SINCE_A)
-        tracker.record_reported("postgresql/0", TS_1)
+        tracker.record_reported("postgresql/0", TS_1, INCIDENT_1)
         assert tracker.last_reported("postgresql/0") == TS_1
 
         tracker.observe("postgresql/0", "blocked", SINCE_B)
@@ -49,7 +49,7 @@ class TestObserve:
 
     def test_status_change_clears_last_reported(self, tracker):
         tracker.observe("postgresql/0", "blocked", SINCE_A)
-        tracker.record_reported("postgresql/0", TS_1)
+        tracker.record_reported("postgresql/0", TS_1, INCIDENT_1)
         tracker.observe("postgresql/0", "active", SINCE_B)
         assert tracker.last_reported("postgresql/0") is None
 
@@ -61,26 +61,36 @@ class TestObserve:
         assert tracker.observe("mysql/0", "blocked", SINCE_A) == 2
 
 
+INCIDENT_1 = {"id": "aaaaaaaa-0000-0000-0000-000000000001", "opened_at": TS_1}
+INCIDENT_2 = {"id": "aaaaaaaa-0000-0000-0000-000000000002", "opened_at": TS_2}
+
+
 class TestRecordReported:
     def test_sets_last_reported(self, tracker):
         tracker.observe("postgresql/0", "blocked", SINCE_A)
-        tracker.record_reported("postgresql/0", TS_1)
+        tracker.record_reported("postgresql/0", TS_1, INCIDENT_1)
         assert tracker.last_reported("postgresql/0") == TS_1
+
+    def test_stores_incident(self, tracker):
+        tracker.observe("postgresql/0", "blocked", SINCE_A)
+        tracker.record_reported("postgresql/0", TS_1, INCIDENT_1)
+        assert tracker.current_incident("postgresql/0") == INCIDENT_1
 
     def test_overwrites_last_reported(self, tracker):
         tracker.observe("postgresql/0", "blocked", SINCE_A)
-        tracker.record_reported("postgresql/0", TS_1)
-        tracker.record_reported("postgresql/0", TS_2)
+        tracker.record_reported("postgresql/0", TS_1, INCIDENT_1)
+        tracker.record_reported("postgresql/0", TS_2, INCIDENT_2)
         assert tracker.last_reported("postgresql/0") == TS_2
+        assert tracker.current_incident("postgresql/0") == INCIDENT_2
 
     def test_no_op_for_unknown_unit(self, tracker):
-        tracker.record_reported("unknown/0", TS_1)
+        tracker.record_reported("unknown/0", TS_1, INCIDENT_1)
         assert tracker.last_reported("unknown/0") is None
 
     def test_does_not_affect_increment(self, tracker):
         tracker.observe("postgresql/0", "blocked", SINCE_A)
         tracker.observe("postgresql/0", "blocked", SINCE_A)
-        tracker.record_reported("postgresql/0", TS_1)
+        tracker.record_reported("postgresql/0", TS_1, INCIDENT_1)
         assert tracker.observe("postgresql/0", "blocked", SINCE_A) == 3
 
 
@@ -91,6 +101,34 @@ class TestLastReported:
     def test_returns_none_before_any_report(self, tracker):
         tracker.observe("postgresql/0", "blocked", SINCE_A)
         assert tracker.last_reported("postgresql/0") is None
+
+
+class TestCloseIncident:
+    def test_has_open_incident_false_when_no_incident(self, tracker):
+        tracker.observe("postgresql/0", "blocked", SINCE_A)
+        assert tracker.has_open_incident("postgresql/0") is False
+
+    def test_has_open_incident_true_after_record_reported(self, tracker):
+        tracker.observe("postgresql/0", "blocked", SINCE_A)
+        tracker.record_reported("postgresql/0", TS_1, INCIDENT_1)
+        assert tracker.has_open_incident("postgresql/0") is True
+
+    def test_has_open_incident_false_after_close(self, tracker):
+        tracker.observe("postgresql/0", "blocked", SINCE_A)
+        tracker.record_reported("postgresql/0", TS_1, INCIDENT_1)
+        closed = {**INCIDENT_1, "closed_at": TS_2}
+        tracker.close_incident("postgresql/0", closed)
+        assert tracker.has_open_incident("postgresql/0") is False
+
+    def test_close_incident_stores_closed_dict(self, tracker):
+        tracker.observe("postgresql/0", "blocked", SINCE_A)
+        tracker.record_reported("postgresql/0", TS_1, INCIDENT_1)
+        closed = {**INCIDENT_1, "closed_at": TS_2}
+        tracker.close_incident("postgresql/0", closed)
+        assert tracker.current_incident("postgresql/0")["closed_at"] == TS_2
+
+    def test_has_open_incident_false_for_unknown_unit(self, tracker):
+        assert tracker.has_open_incident("unknown/0") is False
 
 
 class TestPersistence:
@@ -109,7 +147,7 @@ class TestPersistence:
         t1 = StatusTracker(state_path=path)
         t1.observe("postgresql/0", "blocked", SINCE_A)
         t1.observe("postgresql/0", "blocked", SINCE_A)
-        t1.record_reported("postgresql/0", TS_1)
+        t1.record_reported("postgresql/0", TS_1, INCIDENT_1)
 
         # New instance reads the same file
         t2 = StatusTracker(state_path=path)

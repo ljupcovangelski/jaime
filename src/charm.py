@@ -7,7 +7,7 @@ import datetime
 
 from ops.charm import CharmBase
 from ops.main import main
-from ops.model import ActiveStatus, BlockedStatus, MaintenanceStatus
+from ops.model import ActiveStatus, BlockedStatus, MaintenanceStatus, WaitingStatus
 
 from jaime.diagnostics import (
     validate_diagnostics,
@@ -16,6 +16,11 @@ from jaime.diagnostics import (
     make_empty_plan,
 )
 from jaime.principal import StatusTracker
+from jaime.incident import Incident
+from jaime.collector import collect_context
+from jaime.report import generate_report
+from jaime.logging import write_event
+from jaime.suggest import run_suggest, run_act
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +41,8 @@ class JaimeCharm(CharmBase):
         self.framework.observe(self.on.diagnose_action, self._on_action_diagnose)
         self.framework.observe(self.on.collect_context_action, self._on_action_collect_context)
         self.framework.observe(self.on.generate_report_action, self._on_action_generate_report)
+        self.framework.observe(self.on.show_status_action, self._on_action_show_status)
+        self.framework.observe(self.on.reset_action, self._on_action_reset)
 
     def _on_update_status(self, event):
         try:
@@ -45,19 +52,22 @@ class JaimeCharm(CharmBase):
 
         if relations:
             self._log_principal_status()
-            self.unit.status = ActiveStatus("Ready")
         else:
             self.unit.status = MaintenanceStatus("waiting for principal relation")
 
     def _log_principal_status(self):
         """Read principal unit workload status via goal-state and emit a JSON debug log.
 
-        On every tick, logs the status of watched units.
+        On every tick, logs the status of watched units and updates Jaime's own
+        unit status to reflect the current monitoring state.
 
-        An INCIDENT is generated when:
-          - the status has persisted for at least failure-timeout-minutes, AND
-          - no incident has been generated yet, OR cooldown-minutes have elapsed
-            since the last incident for this unit.
+        State machine for self.unit.status:
+          - healthy / not watched      → ActiveStatus("Ready")
+          - watched, within timeout    → WaitingStatus("<status> - waiting (x/y min)")
+          - collecting context         → MaintenanceStatus("collecting context: <status> (<id>)")
+          - generating report          → MaintenanceStatus("generating report: <status> (<id>)")
+          - incident open / cooldown   → ActiveStatus("incident open: <status> (<id>)")
+          - recovered after incident   → ActiveStatus("Ready")
         """
         watch_statuses = {
             s.strip()
@@ -79,10 +89,27 @@ class JaimeCharm(CharmBase):
 
                 status = goal.status
                 since_iso = goal.since.isoformat()
+                # Capture incident state before observe() may clear it on a new episode.
+                had_open_incident = self._status_tracker.has_open_incident(unit_name)
+                prior_incident = self._status_tracker.current_incident(unit_name)
                 increment = self._status_tracker.observe(unit_name, status, since_iso)
 
+                # --- Recovery ---
                 if status not in watch_statuses:
-                    if increment == 1:
+                    if increment == 1 and had_open_incident and prior_incident:
+                        # Close the open incident.
+                        closed = Incident.from_dict(prior_incident).close()
+                        self._status_tracker.close_incident(unit_name, closed.to_dict())
+                        logger.info(
+                            json.dumps({
+                                "event": "incident-closed",
+                                "unit": unit_name,
+                                "workload": status,
+                                "incident": closed.to_dict(),
+                                "timestamp": now.isoformat(),
+                            })
+                        )
+                    elif increment == 1:
                         logger.debug(
                             json.dumps({
                                 "event": "principal-status-recovered",
@@ -96,20 +123,20 @@ class JaimeCharm(CharmBase):
                             "principal unit %s: workload=%s (not watched, increment=%d)",
                             unit_name, status, increment,
                         )
+                    self.unit.status = ActiveStatus("Ready")
                     continue
 
                 # Always log the current watched status.
-                entry = {
+                logger.debug(json.dumps({
                     "event": "principal-status-watched",
                     "unit": unit_name,
                     "workload": status,
                     "first_seen": since_iso,
                     "increment": increment,
                     "timestamp": now.isoformat(),
-                }
-                logger.debug(json.dumps(entry))
+                }))
 
-                # Check whether failure-timeout has elapsed.
+                # --- Within failure-timeout: waiting ---
                 unhealthy_minutes = (now - goal.since).total_seconds() / 60
                 if unhealthy_minutes < failure_timeout:
                     logger.debug(
@@ -117,26 +144,117 @@ class JaimeCharm(CharmBase):
                         "waiting for failure-timeout (%d min)",
                         unit_name, unhealthy_minutes, failure_timeout,
                     )
+                    self.unit.status = WaitingStatus(
+                        f"{status} - waiting ({unhealthy_minutes:.1f}/{failure_timeout} min)"
+                    )
                     continue
 
-                # Check cooldown: skip if an incident was already generated recently.
+                # --- Cooldown: incident already open ---
                 last_reported_iso = self._status_tracker.last_reported(unit_name)
                 if last_reported_iso:
                     last_reported_dt = datetime.datetime.fromisoformat(last_reported_iso)
                     cooldown_elapsed = (now - last_reported_dt).total_seconds() / 60
                     if cooldown_elapsed < cooldown:
-                        logger.debug(
-                            "principal unit %s: cooldown active (%.1f / %d min elapsed)",
-                            unit_name, cooldown_elapsed, cooldown,
+                        incident_dict = self._status_tracker.current_incident(unit_name)
+                        logger.debug(json.dumps({
+                            "event": "principal-status-cooldown",
+                            "unit": unit_name,
+                            "workload": status,
+                            "first_seen": since_iso,
+                            "increment": increment,
+                            "cooldown_elapsed_minutes": round(cooldown_elapsed, 1),
+                            "cooldown_minutes": cooldown,
+                            "incident": incident_dict,
+                            "timestamp": now.isoformat(),
+                        }))
+                        short_id = (incident_dict or {}).get("id", "")[:8]
+                        self.unit.status = ActiveStatus(
+                            f"incident open: {status} ({short_id})"
                         )
                         continue
 
-                # Generate incident.
-                logger.info(
-                    "INCIDENT unit=%s workload=%s first_seen=%s increment=%d",
-                    unit_name, status, since_iso, increment,
+                # --- Open a new incident ---
+                incident = Incident.open()
+                short_id = incident.id[:8]
+                logger.info(json.dumps({
+                    "event": "incident-opened",
+                    "unit": unit_name,
+                    "workload": status,
+                    "first_seen": since_iso,
+                    "increment": increment,
+                    "incident": incident.to_dict(),
+                    "timestamp": now.isoformat(),
+                }))
+                self._status_tracker.record_reported(unit_name, now.isoformat(), incident.to_dict())
+                self.unit.status = ActiveStatus(
+                    f"incident open: {status} ({short_id})"
                 )
-                self._status_tracker.record_reported(unit_name, now.isoformat())
+                write_event({
+                    "event": "incident-start",
+                    "unit": unit_name,
+                    "workload": status,
+                    "first_seen": since_iso,
+                    "incident_id": incident.id,
+                    "timestamp": now.isoformat(),
+                }, self.model.config.get("audit-log-path", ""))
+
+                # Collect bounded context
+                self.unit.status = MaintenanceStatus(
+                    f"collecting context: {status} ({short_id})"
+                )
+                log_window = self.model.config.get("log-window-minutes", 30)
+                max_lines = self.model.config.get("max-context-lines", 500)
+                context = collect_context(unit_name, log_window, max_lines)
+                write_event({
+                    "event": "context-collected",
+                    "unit": unit_name,
+                    "incident_id": incident.id,
+                    "log_lines": len(context.get("unit_logs", [])),
+                    "timestamp": now.isoformat(),
+                }, self.model.config.get("audit-log-path", ""))
+
+                # Generate report
+                self.unit.status = MaintenanceStatus(
+                    f"generating report: {status} ({short_id})"
+                )
+                base_report_path = generate_report(
+                    incident_id=incident.id,
+                    unit_name=unit_name,
+                    workload=status,
+                    first_seen=since_iso,
+                    context=context,
+                    report_dir=self.model.config.get("report-dir", ""),
+                )
+                with open(base_report_path) as f:
+                    base_content = f.read()
+
+                ai_suggestions, act_results = self._run_mode_logic(base_content)
+
+                report_path = generate_report(
+                    incident_id=incident.id,
+                    unit_name=unit_name,
+                    workload=status,
+                    first_seen=since_iso,
+                    context=context,
+                    report_dir=self.model.config.get("report-dir", ""),
+                    ai_suggestions=ai_suggestions,
+                    act_results=act_results or None,
+                )
+                write_event({
+                    "event": "report-generated",
+                    "unit": unit_name,
+                    "incident_id": incident.id,
+                    "report_path": report_path,
+                    "mode": self.model.config.get("mode", "observe"),
+                    "timestamp": now.isoformat(),
+                }, self.model.config.get("audit-log-path", ""))
+                logger.info(
+                    "incident %s: report written to %s",
+                    short_id, report_path,
+                )
+                self.unit.status = ActiveStatus(
+                    f"incident open: {status} ({short_id})"
+                )
 
         except Exception as e:
             logger.warning("could not read principal goal-state: %s", e)
@@ -223,6 +341,37 @@ class JaimeCharm(CharmBase):
             pass
         return None
 
+    def _run_mode_logic(self, report_content: str) -> tuple[str, list]:
+        """Run suggest or act logic based on the configured mode.
+
+        Returns (ai_suggestions, act_results).
+        Returns ("", []) in observe mode or when no provider is configured.
+        """
+        mode = self.model.config.get("mode", "observe")
+        if mode not in ("suggest", "act"):
+            return "", []
+
+        provider = self._get_ai_provider()
+        if provider is None:
+            logger.warning("mode is '%s' but no AI provider is configured", mode)
+            return "", []
+
+        if mode == "suggest":
+            suggestions = run_suggest(provider, report_content)
+            return suggestions, []
+
+        # act mode
+        suggestions, act_results = run_act(provider, report_content)
+        for result in act_results:
+            write_event({
+                "event": "act-command-executed",
+                "command": result["command"],
+                "returncode": result["returncode"],
+                "stderr": result.get("stderr", ""),
+                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            }, self.model.config.get("audit-log-path", ""))
+        return suggestions, act_results
+
     def _get_ai_provider(self):
         provider_name = self.model.config.get("provider", "none")
         if provider_name == "none":
@@ -271,11 +420,109 @@ class JaimeCharm(CharmBase):
 
     def _on_action_collect_context(self, event):
         logger.info("collect-context action invoked")
-        event.set_results({"context_path": "/var/lib/jaime/incidents/placeholder-context.json"})
+        event.set_results({"context-path": "/var/lib/jaime/incidents/placeholder-context.json"})
 
     def _on_action_generate_report(self, event):
+        """Generate and return the Markdown report for the current open incident."""
         logger.info("generate-report action invoked")
-        event.set_results({"report_path": "/var/log/jaime/reports/placeholder-report.md"})
+
+        # Find the current open incident across all tracked units.
+        incident_id = None
+        unit_name = None
+        workload = None
+        first_seen = None
+        for uname, entry in self._status_tracker._state.items():
+            inc = entry.get("incident")
+            if inc and inc.get("closed_at") is None:
+                incident_id = inc.get("id")
+                unit_name = uname
+                workload = entry.get("status", "unknown")
+                first_seen = entry.get("since", "")
+                break
+
+        if not incident_id:
+            event.fail("no open incident found")
+            return
+
+        log_window = self.model.config.get("log-window-minutes", 30)
+        max_lines = self.model.config.get("max-context-lines", 500)
+        report_dir = self.model.config.get("report-dir", "")
+
+        context = collect_context(unit_name, log_window, max_lines)
+
+        # Base report
+        base_report_path = generate_report(
+            incident_id=incident_id,
+            unit_name=unit_name,
+            workload=workload,
+            first_seen=first_seen,
+            context=context,
+            report_dir=report_dir,
+        )
+        with open(base_report_path) as f:
+            base_content = f.read()
+
+        ai_suggestions, act_results = self._run_mode_logic(base_content)
+
+        report_path = generate_report(
+            incident_id=incident_id,
+            unit_name=unit_name,
+            workload=workload,
+            first_seen=first_seen,
+            context=context,
+            report_dir=report_dir,
+            ai_suggestions=ai_suggestions,
+            act_results=act_results or None,
+        )
+        with open(report_path) as f:
+            content = f.read()
+
+        event.set_results({
+            "incident-id": incident_id,
+            "report-path": report_path,
+            "report": content,
+        })
+
+    def _on_action_show_status(self, event):
+        """Return the current monitoring state for all tracked principal units."""
+        logger.info("show-status action invoked")
+        state = self._status_tracker._state
+        if not state:
+            event.set_results({"result": "no status observed yet"})
+            return
+        results = {}
+        for unit_name, entry in state.items():
+            results.update({
+                "unit": unit_name,
+                "workload": entry.get("status", "unknown"),
+                "first-seen": entry.get("since", ""),
+                "increment": str(entry.get("increment", 0)),
+                "last-reported": entry.get("last_reported") or "",
+                "incident-id": (entry.get("incident") or {}).get("id", ""),
+                "incident-opened-at": (entry.get("incident") or {}).get("opened_at", ""),
+            })
+        event.set_results(results)
+
+    def _on_action_reset(self, event):
+        """Close any open incidents, clear all status state, and return to Ready."""
+        logger.info("reset action invoked")
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        for unit_name in list(self._status_tracker._state):
+            if self._status_tracker.has_open_incident(unit_name):
+                incident_dict = self._status_tracker.current_incident(unit_name)
+                closed = Incident.from_dict(incident_dict).close()
+                logger.info(json.dumps({
+                    "event": "incident-closed",
+                    "unit": unit_name,
+                    "reason": "manual reset",
+                    "incident": closed.to_dict(),
+                    "timestamp": now,
+                }))
+        self._status_tracker._state = {}
+        self._status_tracker._save()
+        self.unit.status = ActiveStatus("Ready")
+        logger.info("status state cleared")
+        event.set_results({"result": "status state cleared"})
 
 
 if __name__ == "__main__":

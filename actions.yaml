@@ -5,5 +5,11 @@ collect-context:
   description: "Write a bounded context bundle to disk and return its path."
   params: {}
 generate-report:
-  description: "Generate a Markdown incident report from the last collected context."
+  description: "Generate and return a Markdown report for the current open incident. Fails if no incident is open."
+  params: {}
+show-status:
+  description: "Show the current monitoring state: principal unit workload, active incident if any, and last observation."
+  params: {}
+reset:
+  description: "Clear all tracked incidents and status state. Use to start fresh after a resolved incident."
   params: {}
