@@ -220,14 +220,10 @@ class JaimeCharm(CharmBase):
                 )
                 log_window = self.model.config.get("log-window-minutes", 30)
                 max_lines = self.model.config.get("max-context-lines", 500)
-                # Anchor logs to when this incident was opened, not when the
-                # principal first entered the watched status. This ensures that
-                # after a reset, a re-opened incident collects fresh logs rather
-                # than logs anchored to the original (possibly old) failure time.
-                incident_opened_dt = datetime.datetime.fromisoformat(incident.opened_at)
+                from_dt = datetime.datetime.fromisoformat(since_iso)
                 context = collect_context(
                     unit_name, log_window, max_lines,
-                    from_time=incident_opened_dt,
+                    from_time=from_dt,
                 )
                 write_event({
                     "event": "context-collected",
@@ -429,13 +425,16 @@ class JaimeCharm(CharmBase):
         if provider_name == "gemini":
             from jaime.providers.gemini import GeminiProvider
             return GeminiProvider(api_token, model)
+        elif provider_name == "openrouter":
+            from jaime.providers.openrouter import OpenRouterProvider
+            return OpenRouterProvider(api_token, model)
 
         logger.warning("unsupported provider: %s", provider_name)
         return None
 
     @staticmethod
     def _default_model(provider_name):
-        mapping = {"gemini": "gemini-2.5-flash"}
+        mapping = {"gemini": "gemini-2.5-flash", "openrouter": "deepseek/deepseek-v4-flash"}
         return mapping.get(provider_name, "")
 
     def _on_action_diagnose(self, event):
@@ -470,7 +469,6 @@ class JaimeCharm(CharmBase):
         unit_name = None
         workload = None
         first_seen = None
-        incident_opened_at = None
         for uname, entry in self._status_tracker._state.items():
             inc = entry.get("incident")
             if inc and inc.get("closed_at") is None:
@@ -478,7 +476,6 @@ class JaimeCharm(CharmBase):
                 unit_name = uname
                 workload = entry.get("status", "unknown")
                 first_seen = entry.get("since", "")
-                incident_opened_at = inc.get("opened_at")
                 break
 
         if not incident_id:
@@ -489,10 +486,8 @@ class JaimeCharm(CharmBase):
         max_lines = self.model.config.get("max-context-lines", 500)
         report_dir = self.model.config.get("report-dir", "")
 
-        opened_dt = datetime.datetime.fromisoformat(incident_opened_at) if incident_opened_at else None
         context = collect_context(
             unit_name, log_window, max_lines,
-            from_time=opened_dt,
         )
         report_path = generate_report(
             incident_id=incident_id,
@@ -525,7 +520,8 @@ class JaimeCharm(CharmBase):
                 event.set_results({
                     "incident-id": inc["id"],
                     "description": suggestion["description"],
-                    "commands": json.dumps(suggestion["commands"]),
+                    "commands": "\n".join(suggestion["commands"]),
+                    "command-count": len(suggestion["commands"]),
                     "generated-at": suggestion["generated_at"],
                 })
                 return

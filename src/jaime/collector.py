@@ -8,13 +8,12 @@ import datetime
 import json
 import logging
 import os
-import re
 import sqlite3
 import subprocess
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_LOG_WINDOW_MINUTES = 30
+_DEFAULT_LOG_WINDOW_MINUTES = 120
 _DEFAULT_MAX_LINES = 500
 _JUJU_LOG_DIR = "/var/log/juju"
 
@@ -169,8 +168,6 @@ def collect_unit_logs(
 
     if from_time is not None:
         cutoff = from_time - datetime.timedelta(minutes=buffer_minutes)
-        # Never go further back than log_window_minutes
-        cutoff = max(cutoff, earliest_allowed)
     else:
         cutoff = earliest_allowed
 
@@ -187,7 +184,8 @@ def collect_unit_logs(
             if recent:
                 recent.append(line.rstrip())
 
-    return _tail_lines("\n".join(recent), max_lines)
+    filtered = [l for l in recent if " INFO " not in l]
+    return _tail_lines("\n".join(filtered), max_lines)
 
 
 def collect_systemd_failed() -> list[str]:
@@ -325,6 +323,29 @@ def _collect_broad_ports() -> list[str]:
     return [l.rstrip() for l in output.splitlines() if l.strip()]
 
 
+
+
+
+def collect_charm_config(unit_name: str) -> dict:
+    """Read the principal charm's config.yaml and actions.yaml.
+
+    Returns a dict with keys ``config_yaml`` and ``actions_yaml`` containing
+    the raw file content, or ``""`` if the file is missing/unreadable.
+    """
+    tag = "unit-" + unit_name.replace("/", "-")
+    charm_dir = f"/var/lib/juju/agents/{tag}/charm"
+    result = {}
+    for name in ("config.yaml", "actions.yaml"):
+        path = os.path.join(charm_dir, name)
+        try:
+            with open(path) as f:
+                result[name.replace(".yaml", "_yaml")] = f.read()
+        except Exception as e:
+            logger.debug("could not read %s for %s: %s", path, unit_name, e)
+            result[name.replace(".yaml", "_yaml")] = ""
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Main collection entry point
 # ---------------------------------------------------------------------------
@@ -349,6 +370,8 @@ def collect_context(
     or ``diagnostics_plan`` is None, a broad fallback is used for that section.
 
     Background context (unit logs, disk usage, memory) is always collected.
+
+    Background context (unit logs, disk usage, memory) is always collected.
     """
     context = {
         "unit_logs": collect_unit_logs(
@@ -358,6 +381,7 @@ def collect_context(
         "tracing_events": collect_tracing_events(
             unit_name, from_time=from_time, buffer_minutes=buffer_minutes,
         ),
+        "charm_config": collect_charm_config(unit_name),
         "disk_usage": collect_disk_usage(),
         "memory_summary": collect_memory_summary(),
         "collected_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),

@@ -100,8 +100,8 @@ class TestCollectUnitLogs:
         now = datetime.datetime.now(datetime.timezone.utc)
         recent_ts = now.strftime("%Y-%m-%d %H:%M:%S")
         log_file.write_text(
-            f"{old_ts} INFO old line\n"
-            f"{recent_ts} INFO recent line\n"
+            f"{old_ts} ERROR old line\n"
+            f"{recent_ts} ERROR recent line\n"
         )
         import jaime.collector as jcollector
         with mock.patch.object(jcollector, "_JUJU_LOG_DIR", str(tmp_path)):
@@ -136,19 +136,14 @@ class TestCollectUnitLogs:
         assert any("near incident start" in l for l in result)
         assert any("incident error" in l for l in result)
 
-    def test_from_time_capped_by_log_window(self, tmp_path):
-        """from_time far in the past is capped by log_window_minutes."""
+    def test_from_time_not_capped_by_log_window(self, tmp_path):
+        """from_time anchors the window without being capped by log_window."""
         log_file = tmp_path / "unit-postgresql-0.log"
         now = datetime.datetime.now(datetime.timezone.utc)
-        # Line from 90 minutes ago — beyond log_window of 60 min, must be excluded
-        very_old_ts = (now - datetime.timedelta(minutes=90)).strftime("%Y-%m-%d %H:%M:%S")
-        # Line from 30 minutes ago — within log_window, must be included
-        recent_ts = (now - datetime.timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
-        log_file.write_text(
-            f"{very_old_ts} INFO very old line\n"
-            f"{recent_ts} INFO recent line\n"
-        )
-        # from_time is 2 hours ago with buffer=5 → would go to 2h5m, but capped at 60min
+        # Line from 90 minutes ago and 30 minutes ago — both within from_time - buffer
+        ts_old = (now - datetime.timedelta(minutes=90)).strftime("%Y-%m-%d %H:%M:%S")
+        ts_recent = (now - datetime.timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
+        log_file.write_text(f"{ts_old} ERROR old line\n{ts_recent} ERROR recent line\n")
         from_time = now - datetime.timedelta(hours=2)
         import jaime.collector as jcollector
         with mock.patch.object(jcollector, "_JUJU_LOG_DIR", str(tmp_path)):
@@ -156,7 +151,8 @@ class TestCollectUnitLogs:
                 "postgresql/0", log_window_minutes=60,
                 from_time=from_time, buffer_minutes=5,
             )
-        assert not any("very old line" in l for l in result)
+        # Both lines are within from_time - buffer (2h5m ago), so both are included
+        assert any("old line" in l for l in result)
         assert any("recent line" in l for l in result)
 
     def test_without_from_time_uses_rolling_window(self, tmp_path):
@@ -166,8 +162,8 @@ class TestCollectUnitLogs:
         old_ts = (now - datetime.timedelta(minutes=120)).strftime("%Y-%m-%d %H:%M:%S")
         recent_ts = now.strftime("%Y-%m-%d %H:%M:%S")
         log_file.write_text(
-            f"{old_ts} INFO old rolling line\n"
-            f"{recent_ts} INFO new rolling line\n"
+            f"{old_ts} ERROR old rolling line\n"
+            f"{recent_ts} ERROR new rolling line\n"
         )
         import jaime.collector as jcollector
         with mock.patch.object(jcollector, "_JUJU_LOG_DIR", str(tmp_path)):
@@ -216,6 +212,7 @@ class TestCollectContext:
         assert "systemd_failed" in ctx
         assert "disk_usage" in ctx
         assert "memory_summary" in ctx
+        assert "charm_config" in ctx
         assert "collected_at" in ctx
 
     def test_collected_at_is_utc_iso(self):
@@ -225,6 +222,28 @@ class TestCollectContext:
              mock.patch("jaime.collector.collect_memory_summary", return_value=[]):
             ctx = collect_context("postgresql/0")
         assert "+00:00" in ctx["collected_at"] or ctx["collected_at"].endswith("Z")
+
+
+class TestCollectCharmConfig:
+    def test_returns_config_and_actions(self):
+        config_yaml = "options:\n  port:\n    default: 5432\n"
+        actions_yaml = "actions:\n  restart:\n    description: Restart\n"
+        contents = {
+            "/var/lib/juju/agents/unit-postgresql-0/charm/config.yaml": config_yaml,
+            "/var/lib/juju/agents/unit-postgresql-0/charm/actions.yaml": actions_yaml,
+        }
+        import jaime.collector as jcollector
+        with mock.patch("builtins.open", mock.mock_open()) as m:
+            m.side_effect = lambda p, *a, **kw: mock.mock_open(read_data=contents.get(p, ""))()
+            result = jcollector.collect_charm_config("postgresql/0")
+        assert result["config_yaml"] == config_yaml
+        assert result["actions_yaml"] == actions_yaml
+
+    def test_missing_files_returns_empty(self):
+        import jaime.collector as jcollector
+        result = jcollector.collect_charm_config("nonexistent/0")
+        assert result["config_yaml"] == ""
+        assert result["actions_yaml"] == ""
 
 
 class TestCollectTracingEvents:

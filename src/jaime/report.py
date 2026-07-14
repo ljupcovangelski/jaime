@@ -58,9 +58,10 @@ def generate_report(
     _append_section_env(lines, plan_results)
 
     # Background sections
+    _append_section_charm_config(lines, context)
     _append_section_disk(lines, context)
     _append_section_memory(lines, context)
-    _append_section_tracing(lines, context)
+    # _append_section_tracing(lines, context)
     _append_section_logs(lines, context)
 
     content = "\n".join(lines)
@@ -188,6 +189,19 @@ def _append_section_env(lines: list[str], plan_results: dict) -> None:
             _append(lines, [f"- `{name}` — unset ✗"])
 
 
+def _append_section_charm_config(lines: list[str], context: dict) -> None:
+    charm_config = context.get("charm_config", {})
+    config_yaml = charm_config.get("config_yaml", "")
+    actions_yaml = charm_config.get("actions_yaml", "")
+    if not config_yaml and not actions_yaml:
+        return
+    _append(lines, ["## Charm config"])
+    if config_yaml:
+        _append(lines, ["### config.yaml", "```yaml", config_yaml.rstrip(), "```"])
+    # if actions_yaml:
+    #    _append(lines, ["### actions.yaml", "```yaml", actions_yaml.rstrip(), "```"])
+
+
 def _append_section_disk(lines: list[str], context: dict) -> None:
     disk = context.get("disk_usage", [])
     _append(lines, ["## Disk usage"])
@@ -210,6 +224,7 @@ def _append_section_logs(lines: list[str], context: dict) -> None:
     unit_logs = context.get("unit_logs", [])
     _append(lines, ["## Recent unit logs"])
     _append(lines, ["_Logs are in chronological order. Read from bottom to top — the most recent and relevant entries are at the end._"])
+    _append(lines, ["Use this error message to guide your analysis. Those errors need to be understood to provide a proper diagnostic"])
     if unit_logs:
         _append(lines, ["```", *unit_logs, "```"])
     else:
@@ -235,4 +250,3 @@ def _append_section_tracing(lines: list[str], context: dict) -> None:
         rows.append(f"| `{ts}` | `{name}` | `{kind}` | {error_col} |")
 
     _append(lines, rows)
-

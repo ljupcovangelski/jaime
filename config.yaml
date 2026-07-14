@@ -36,7 +36,7 @@ options:
   log-window-minutes:
     type: int
     description: "How far back Jaime should collect recent logs (minutes)."
-    default: 30
+    default: 120
   max-context-lines:
     type: int
     description: "Maximum number of log/context lines to include in a report context bundle."
