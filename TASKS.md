@@ -52,23 +52,23 @@ Only logic for `observe` mode is added at this phase.
 
 ### 1.4. Principal status monitoring
 
-- [ ] [charm] Implement principal unit discovery
-- [ ] [python] Implement placeholder status reader
-- [ ] [python] Implement real status reader using Juju context/hook tools where possible
-- [ ] [charm] Detect watched statuses
-- [ ] [python] Detect recovery
-- [ ] [python] Avoid duplicate incident creation
+- [X] [charm] Implement principal unit discovery
+- [X] [python] Implement placeholder status reader
+- [X] [python] Implement real status reader using Juju context/hook tools where possible
+- [X] [charm] Detect watched statuses
+- [X] [python] Detect recovery
+- [X] [python] Avoid duplicate incident creation
 
 ### 1.5. Incident tracking
 
 - [ ] [python] Define incident model
 - [ ] [python] Create incident ID format
-- [ ] [python] Store active incident state under `/var/lib/jaime/incidents/`
-- [ ] [python] Record `first_seen`
-- [ ] [python] Record current status and message
+- [X] [python] Store active incident state under `/var/lib/jaime/incidents/`
+- [X] [python] Record `first_seen`
+- [X] [python] Record current status and message (only status is readable from hooks)
 - [ ] [python] Record report generation state
 - [ ] [python] Close incident on recovery
-- [ ] [python] Add cooldown logic
+- [X] [python] Add cooldown logic
 
 ### 1.6. Context collection
 

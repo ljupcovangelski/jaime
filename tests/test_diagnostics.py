@@ -281,7 +281,7 @@ class TestMakeEmptyPlan:
         plan = make_empty_plan("test-app")
         assert plan["principal_name"] == "test-app"
         assert "generated_at" in plan
-        assert plan["generated_at"].endswith("Z")
+        assert "+00:00" in plan["generated_at"] or plan["generated_at"].endswith("Z")
         mp = plan["monitoring_plan"]
         assert mp["log_files"] == []
         assert mp["processes"] == []

@@ -234,7 +234,7 @@ def make_empty_plan(principal_name):
     """Create a minimal empty diagnostics plan with the required fields."""
     return {
         "principal_name": principal_name,
-        "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
+        "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "monitoring_plan": {
             "log_files": [],
             "processes": [],

@@ -15,6 +15,7 @@ from jaime.diagnostics import (
     write_diagnostics_file,
     make_empty_plan,
 )
+from jaime.principal import StatusTracker
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ class JaimeCharm(CharmBase):
 
     def __init__(self, *args):
         super().__init__(*args)
+        self._status_tracker = StatusTracker()
 
         self.framework.observe(self.on.update_status, self._on_update_status)
         self.framework.observe(self.on.principal_relation_changed, self._on_principal_changed)
@@ -42,9 +44,102 @@ class JaimeCharm(CharmBase):
             relations = []
 
         if relations:
+            self._log_principal_status()
             self.unit.status = ActiveStatus("Ready")
         else:
             self.unit.status = MaintenanceStatus("waiting for principal relation")
+
+    def _log_principal_status(self):
+        """Read principal unit workload status via goal-state and emit a JSON debug log.
+
+        On every tick, logs the status of watched units.
+
+        An INCIDENT is generated when:
+          - the status has persisted for at least failure-timeout-minutes, AND
+          - no incident has been generated yet, OR cooldown-minutes have elapsed
+            since the last incident for this unit.
+        """
+        watch_statuses = {
+            s.strip()
+            for s in self.model.config.get("watch-statuses", "error,blocked").split(",")
+            if s.strip()
+        }
+        failure_timeout = self.model.config.get("failure-timeout-minutes", 5)
+        cooldown = self.model.config.get("cooldown-minutes", 30)
+
+        now = datetime.datetime.now(datetime.timezone.utc)
+
+        try:
+            from ops.hookcmds import goal_state
+            gs = goal_state()
+            principal_relations = gs.relations.get("principal", {})
+            for unit_name, goal in principal_relations.items():
+                if "/" not in unit_name:
+                    continue
+
+                status = goal.status
+                since_iso = goal.since.isoformat()
+                increment = self._status_tracker.observe(unit_name, status, since_iso)
+
+                if status not in watch_statuses:
+                    if increment == 1:
+                        logger.debug(
+                            json.dumps({
+                                "event": "principal-status-recovered",
+                                "unit": unit_name,
+                                "workload": status,
+                                "timestamp": now.isoformat(),
+                            })
+                        )
+                    else:
+                        logger.debug(
+                            "principal unit %s: workload=%s (not watched, increment=%d)",
+                            unit_name, status, increment,
+                        )
+                    continue
+
+                # Always log the current watched status.
+                entry = {
+                    "event": "principal-status-watched",
+                    "unit": unit_name,
+                    "workload": status,
+                    "first_seen": since_iso,
+                    "increment": increment,
+                    "timestamp": now.isoformat(),
+                }
+                logger.debug(json.dumps(entry))
+
+                # Check whether failure-timeout has elapsed.
+                unhealthy_minutes = (now - goal.since).total_seconds() / 60
+                if unhealthy_minutes < failure_timeout:
+                    logger.debug(
+                        "principal unit %s: unhealthy for %.1f min, "
+                        "waiting for failure-timeout (%d min)",
+                        unit_name, unhealthy_minutes, failure_timeout,
+                    )
+                    continue
+
+                # Check cooldown: skip if an incident was already generated recently.
+                last_reported_iso = self._status_tracker.last_reported(unit_name)
+                if last_reported_iso:
+                    last_reported_dt = datetime.datetime.fromisoformat(last_reported_iso)
+                    cooldown_elapsed = (now - last_reported_dt).total_seconds() / 60
+                    if cooldown_elapsed < cooldown:
+                        logger.debug(
+                            "principal unit %s: cooldown active (%.1f / %d min elapsed)",
+                            unit_name, cooldown_elapsed, cooldown,
+                        )
+                        continue
+
+                # Generate incident.
+                logger.info(
+                    "INCIDENT unit=%s workload=%s first_seen=%s increment=%d",
+                    unit_name, status, since_iso, increment,
+                )
+                self._status_tracker.record_reported(unit_name, now.isoformat())
+
+        except Exception as e:
+            logger.warning("could not read principal goal-state: %s", e)
 
     def _on_principal_joined(self, event):
         logger.info("principal relation joined: %s", event.relation)
@@ -103,7 +198,7 @@ class JaimeCharm(CharmBase):
             prompt = build_prompt(principal_name)
             response = provider.generate(prompt)
             plan = json.loads(response)
-            plan["generated_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+            plan["generated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
         except Exception as e:
             logger.error("AI diagnostics generation failed: %s", e)
             self.unit.status = BlockedStatus("diagnostics generation failed")
@@ -170,7 +265,7 @@ class JaimeCharm(CharmBase):
                 "charm_version": "unknown",
             },
             "jaime": {"unit": self.unit.name, "mode": self.model.config.get("mode")},
-            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }
         event.set_results({"diagnose": result})
 
