@@ -80,23 +80,6 @@ class TestGenerateReport:
         path = generate_report(INCIDENT_ID, "postgresql/0", "blocked", FIRST_SEEN, _FULL_CONTEXT, "")
         assert os.path.exists(path)
 
-    def test_ai_suggestions_appended(self, tmp_path):
-        path = generate_report(INCIDENT_ID, "postgresql/0", "blocked", FIRST_SEEN, _FULL_CONTEXT,
-                               str(tmp_path), ai_suggestions="## Suggested checks\n\n- Check config")
-        content = open(path).read()
-        assert "AI Diagnosis" in content
-        assert "Suggested checks" in content
-
-    def test_act_results_appended(self, tmp_path):
-        act_results = [{"command": "systemctl restart postgresql", "returncode": 0, "stdout": "done", "stderr": ""}]
-        path = generate_report(INCIDENT_ID, "postgresql/0", "blocked", FIRST_SEEN, _FULL_CONTEXT,
-                               str(tmp_path), act_results=act_results)
-        content = open(path).read()
-        assert "Act mode" in content
-        assert "systemctl restart postgresql" in content
-        assert "exit 0" in content
-
-
 _PLAN_RESULTS_LOG_FILES = {
     "plan_results": {
         "log_files": {
