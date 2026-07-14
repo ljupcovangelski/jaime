@@ -80,16 +80,14 @@ def execute_command(command: str, timeout: int = 30) -> dict:
 def run_suggest(provider, report_content: str) -> str:
     """Call the AI provider and return the raw LLM response.
 
-    Returns an empty string if the provider is None or the call fails.
+    Raises if the provider is unavailable or returns an error, so the caller
+    can surface the failure as a unit status.
+    Returns an empty string only if provider is None.
     """
     if provider is None:
         return ""
-    try:
-        prompt = build_suggest_prompt(report_content)
-        return provider.generate(prompt)
-    except Exception as e:
-        logger.warning("AI suggest call failed: %s", e)
-        return ""
+    prompt = build_suggest_prompt(report_content)
+    return provider.generate(prompt)
 
 
 def run_act(

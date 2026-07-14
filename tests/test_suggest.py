@@ -87,7 +87,8 @@ class TestRunSuggest:
     def test_returns_empty_on_provider_failure(self):
         provider = mock.MagicMock()
         provider.generate.side_effect = RuntimeError("API error")
-        assert run_suggest(provider, "report content") == ""
+        with pytest.raises(RuntimeError):
+            run_suggest(provider, "report content")
 
 
 class TestRunAct:

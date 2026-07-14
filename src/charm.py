@@ -169,9 +169,11 @@ class JaimeCharm(CharmBase):
                             "timestamp": now.isoformat(),
                         }))
                         short_id = (incident_dict or {}).get("id", "")[:8]
-                        self.unit.status = ActiveStatus(
-                            f"incident open: {status} ({short_id})"
-                        )
+                        # Preserve BlockedStatus if a provider error was already set.
+                        if not isinstance(self.unit.status, BlockedStatus):
+                            self.unit.status = ActiveStatus(
+                                f"incident open: {status} ({short_id})"
+                            )
                         continue
 
                 # --- Open a new incident ---
@@ -256,9 +258,11 @@ class JaimeCharm(CharmBase):
                     "incident %s: report written to %s",
                     short_id, report_path,
                 )
-                self.unit.status = ActiveStatus(
-                    f"incident open: {status} ({short_id})"
-                )
+                # Only update to active if no provider error was set.
+                if not isinstance(self.unit.status, BlockedStatus):
+                    self.unit.status = ActiveStatus(
+                        f"incident open: {status} ({short_id})"
+                    )
 
         except Exception as e:
             logger.warning("could not read principal goal-state: %s", e)
@@ -350,6 +354,7 @@ class JaimeCharm(CharmBase):
 
         Returns (ai_suggestions, act_results).
         Returns ("", []) in observe mode or when no provider is configured.
+        Sets BlockedStatus if the AI provider call fails.
         """
         mode = self.model.config.get("mode", "observe")
         if mode not in ("suggest", "act"):
@@ -358,23 +363,30 @@ class JaimeCharm(CharmBase):
         provider = self._get_ai_provider()
         if provider is None:
             logger.warning("mode is '%s' but no AI provider is configured", mode)
+            self.unit.status = BlockedStatus(f"mode={mode} but no AI provider configured")
             return "", []
 
-        if mode == "suggest":
-            suggestions = run_suggest(provider, report_content)
-            return suggestions, []
+        try:
+            if mode == "suggest":
+                suggestions = run_suggest(provider, report_content)
+                return suggestions, []
 
-        # act mode
-        suggestions, act_results = run_act(provider, report_content)
-        for result in act_results:
-            write_event({
-                "event": "act-command-executed",
-                "command": result["command"],
-                "returncode": result["returncode"],
-                "stderr": result.get("stderr", ""),
-                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            }, self.model.config.get("audit-log-path", ""))
-        return suggestions, act_results
+            # act mode
+            suggestions, act_results = run_act(provider, report_content)
+            for result in act_results:
+                write_event({
+                    "event": "act-command-executed",
+                    "command": result["command"],
+                    "returncode": result["returncode"],
+                    "stderr": result.get("stderr", ""),
+                    "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                }, self.model.config.get("audit-log-path", ""))
+            return suggestions, act_results
+
+        except Exception as e:
+            logger.error("AI provider call failed in mode '%s': %s", mode, e)
+            self.unit.status = BlockedStatus(f"AI provider error: {str(e)[:60]}")
+            return "", []
 
     def _get_ai_provider(self):
         provider_name = self.model.config.get("provider", "none")
@@ -397,7 +409,7 @@ class JaimeCharm(CharmBase):
 
     @staticmethod
     def _default_model(provider_name):
-        mapping = {"gemini": "gemini-2.0-flash"}
+        mapping = {"gemini": "gemini-2.5-flash"}
         return mapping.get(provider_name, "")
 
     def _on_action_diagnose(self, event):
