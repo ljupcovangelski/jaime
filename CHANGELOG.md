@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.0.4] - 2026-07-14
+
+### Features
+
+- Wire diagnostics plan into collector: iterate plan sections and collect per-item data
+- Add broad fallback collection when plan is empty or missing (ps aux, ss -tlnp, etc.)
+- Add plan-driven Markdown report sections (log files, processes, systemd units, network ports, env vars)
+- Add unit tests for plan-driven collection and report sections (23 new tests, 171 total)
+
+## [0.0.3] - 2026-07-14
+
+### Features
+
+- Implement principal status monitoring with goal-state via `StatusTracker`
+- Add incident lifecycle model (`Incident` dataclass) with open/close/recovery
+- Add bounded context collector (Juju logs, systemd, disk, memory)
+- Add plan-driven context collection: iterate diagnostics plan and collect per-section data
+- Add Markdown report generation from collected context
+- Add structured JSONL audit logging
+- Add `show-status` and `reset` actions
+- Add suggest/act mode support (gated behind mode config)
+- Add test infrastructure (pytest, pyproject.toml, tox.ini, test script)
+- Add unit tests for `diagnostics.py`, `providers/`
+
 ## [0.0.2] - 2026-07-05
 
 ### Features

@@ -73,11 +73,16 @@ on update-status:
     if report already generated for this incident:
       respect cooldown and exit
 
-    collect full bounded context
+    load diagnostics plan
+    if plan is available and has items in a section:
+      collect per-plan context (tail log files, pgrep processes, systemctl is-active, ss port check, os.environ.get)
+    else for each empty or missing section:
+      collect broad fallback (ps aux for processes, systemctl --failed for systemd, ss -tlnp for ports)
+    collect background context (Juju unit logs, disk usage, memory summary)
     write raw context bundle
 
-    if AI provider is configured and ai-report-enabled is true:
-      generate AI-assisted Markdown report
+    if mode is suggest or act and AI provider is configured:
+      generate AI-assisted Markdown report with AI suggestions
     else:
       generate non-AI Markdown report
 
@@ -93,7 +98,7 @@ Default mode.
 Jaime may:
 
 - read Juju/local state
-- collect logs
+- collect logs per diagnostics plan
 - write JSONL audit logs
 - write Markdown reports
 - call AI provider for diagnosis/reporting
@@ -105,9 +110,17 @@ Jaime must not:
 - change charm or system configuration
 - run AI-generated remediation commands
 
+### suggest
+
+Same as observe, but after generating the base report, Jaime calls the AI provider
+and appends an "AI Diagnosis & Suggestions" section. No commands are executed.
+AI output is purely advisory.
+
 ### act
 
-Future mode.
+**Not part of the first MVP.** Code exists but is gated behind `mode: act`.
+
+Capabilities:
 
 Not part of the first MVP implementation.
 
@@ -157,13 +170,17 @@ AI is not used for:
 ## Data flow
 
 ```text
+Diagnostics plan (generated on relation-joined)
+        ↓
 Juju status / local checks
         ↓
-Principal monitor
+Principal monitor (StatusTracker)
         ↓
 Incident tracker
         ↓
 Context collector
+  ├── plan-driven (log files, processes, systemd units, network, env vars)
+  └── background (Juju logs, disk, memory)
         ↓
 Sanitizer / compactor
         ↓
@@ -222,6 +239,8 @@ Phase-1 actions:
 diagnose
 collect-context
 generate-report
+show-status
+reset
 ```
 
 Future actions:

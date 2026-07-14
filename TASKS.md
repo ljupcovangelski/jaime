@@ -52,65 +52,76 @@ Only logic for `observe` mode is added at this phase.
 
 ### 1.4. Principal status monitoring
 
-- [X] [charm] Implement principal unit discovery
-- [X] [python] Implement placeholder status reader
-- [X] [python] Implement real status reader using Juju context/hook tools where possible
-- [X] [charm] Detect watched statuses
-- [X] [python] Detect recovery
-- [X] [python] Avoid duplicate incident creation
+- [x] [charm] Implement principal unit discovery via goal-state
+- [x] [python] Implement `StatusTracker` for per-unit state persistence
+- [x] [python] Implement real status reader using Juju goal-state hook tool
+- [x] [charm] Detect watched statuses from config
+- [x] [python] Detect recovery (status leaving watch list)
+- [x] [python] Avoid duplicate incident creation via incident ID tracking
 
 ### 1.5. Incident tracking
 
-- [ ] [python] Define incident model
-- [ ] [python] Create incident ID format
-- [X] [python] Store active incident state under `/var/lib/jaime/incidents/`
-- [X] [python] Record `first_seen`
-- [X] [python] Record current status and message (only status is readable from hooks)
-- [ ] [python] Record report generation state
-- [ ] [python] Close incident on recovery
-- [X] [python] Add cooldown logic
+- [x] [python] Define `Incident` dataclass with open/close lifecycle
+- [x] [python] Use UUID4 for incident IDs
+- [x] [python] Store active incident state in `StatusTracker` under `/var/lib/jaime/status-state.json`
+- [x] [python] Record `first_seen` timestamp per unit
+- [x] [python] Record current status per unit
+- [x] [python] Record report generation state as `last_reported` timestamp
+- [x] [python] Close incident on recovery detection
+- [x] [python] Add cooldown logic to prevent repeated report generation
 
 ### 1.6. Context collection
 
-- [ ] [charm] Collect Juju goal-state/status context
-- [ ] [python] Collect recent Juju unit logs
-- [ ] [python] Collect recent principal charm logs if available
-- [ ] [python] Collect systemd failed units
+- [x] [charm] Collect Juju goal-state/status context via hook tool
+- [x] [python] Collect recent Juju unit logs bounded by `log-window-minutes` and `max-context-lines`
+- [x] [python] Collect systemd failed units via `systemctl --failed`
+- [x] [python] Collect disk usage via `df -h`
+- [x] [python] Collect memory summary via `free -h`
+- [x] [python] Enforce `max-context-lines` on all log/collect output
 - [ ] [python] Collect journal snippets bounded by time/lines
-- [ ] [python] Collect disk usage
-- [ ] [python] Collect memory summary
-- [ ] [python] Collect network summary
-- [ ] [python] Enforce `max-context-lines`
 - [ ] [python] Redact obvious secrets/tokens/passwords
+
+### 1.6a. Plan-driven context collection
+
+- [x] [python] Load diagnostics plan in collector and iterate sections
+- [x] [python] Collect per-plan log files (`tail -n max_lines` each path)
+- [x] [python] Collect per-plan processes (`pgrep -f` and compare count)
+- [x] [python] Collect per-plan systemd units (`systemctl is-active`)
+- [x] [python] Collect per-plan network ports (`ss -tlnp` filtering)
+- [x] [python] Collect per-plan environment variables (`os.environ.get`)
+- [x] [python] Return plan_results alongside background context
+- [x] [python] Handle empty plan gracefully (broad fallback)
+- [x] [python] Broad fallback for missing plan (`ps aux`, `ss -tlnp`, `systemctl --failed`)
 
 ### 1.7. Structured logging
 
-- [ ] [python] Create `/var/log/jaime/events.jsonl`
-- [ ] [python] Write `incident-start` event
-- [ ] [python] Write `still-unhealthy` event
-- [ ] [python] Write `context-collected` event
-- [ ] [python] Write `report-generated` event
-- [ ] [python] Write `incident-recovered` event
-- [ ] [python] Include timestamp, incident ID, principal unit, status, reason, and paths
+- [x] [python] Create append-only JSONL audit logger (`logging.py`)
+- [x] [python] Write `incident-start` event on incident open
+- [x] [python] Write `context-collected` event with log line count
+- [x] [python] Write `report-generated` event with path and mode
+- [ ] [python] Write `still-unhealthy` event during timeout wait
+- [ ] [python] Write `incident-recovered` event on recovery
+- [x] [python] Include timestamp, incident ID, principal unit, status in all events
 
 ### 1.8. Reports
 
-- [ ] [python] Generate non-AI Markdown report
-- [ ] [python] Include timeline
-- [ ] [python] Include observed status
-- [ ] [python] Include bounded log excerpts
-- [ ] [python] Include host checks
+- [x] [python] Generate non-AI Markdown report from collected context
+- [x] [python] Include timeline (incident ID, first seen, generated at)
+- [x] [python] Include observed workload status
+- [x] [python] Include bounded Juju unit log excerpts
+- [x] [python] Include host checks (disk, memory, systemd)
+- [x] [python] Include plan-driven sections (log files, processes, systemd units, network ports, env vars)
 - [ ] [python] Include suggested manual next steps
-- [ ] [python] Store reports under `/var/log/jaime/reports/`
+- [x] [python] Store reports under `/var/log/jaime/reports/`
 
 ### 1.9. Actions
 
-- [ ] [charm] `diagnose`: collect current context and return short result
-- [ ] [python] Add diagnose result builder
-- [ ] [charm] `collect-context`: write context bundle and return path
-- [ ] [charm] `generate-report`: generate report and return path
-- [ ] [charm] Ensure actions work in observe mode
-- [ ] [charm] Ensure actions do not mutate principal workload
+- [x] [charm] `diagnose`: return current principal context and mode
+- [x] [charm] `collect-context`: collect and return context
+- [x] [charm] `generate-report`: collect context, generate report, return path and content
+- [x] [charm] `show-status`: return current monitoring state for all units
+- [x] [charm] `reset`: close open incidents and clear status state
+- [x] [charm] Ensure all actions are read-only in observe mode
 
 ### 1.10. Tests
 
@@ -121,14 +132,16 @@ Only logic for `observe` mode is added at this phase.
 - [x] [test] Unit test `diagnostics.py` — `DIAGNOSTICS_SCHEMA` structure
 - [x] [test] Unit test `providers/base.py` — abstract class contract
 - [x] [test] Unit test `providers/gemini.py` — init, successful generation, error handling, empty responses
-- [ ] [test] Unit test incident creation
-- [ ] [test] Unit test timeout threshold
-- [ ] [test] Unit test cooldown behaviour
-- [ ] [test] Unit test recovery closes incident
-- [ ] [test] Unit test log line bounding
-- [ ] [test] Unit test secret redaction
-- [ ] [test] Unit test non-AI report generation
-- [ ] [test] Add fake provider for later AI tests
+- [x] [test] Unit test `Incident` model — create, close, is_open, to/from dict
+- [x] [test] Unit test `StatusTracker` — observe, episode detection, open/close incident
+- [x] [test] Unit test cooldown behaviour (in `test_charm_status.py`)
+- [x] [test] Unit test log line bounding (`_tail_lines`)
+- [x] [test] Unit test plan-driven collection — log files, processes, systemd units, network ports, env vars
+- [x] [test] Unit test plan-driven collection — empty plan, missing sections
+- [x] [test] Unit test report generation — background sections
+- [x] [test] Unit test report generation — plan-driven sections
+- [x] [test] Unit test `write_event` audit logging
+- [ ] [test] Add fake provider for AI tests
 
 ## 2. Phase 2 — Assisted Remediation
 

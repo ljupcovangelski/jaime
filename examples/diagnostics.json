@@ -1,0 +1,51 @@
+{
+  "principal_name": "postgresql",
+  "generated_at": "2026-07-14T10:05:00+00:00",
+  "monitoring_plan": {
+    "log_files": [
+      {
+        "path": "/var/log/postgresql/postgresql-16-main.log",
+        "priority": "high",
+        "description": "Main PostgreSQL log"
+      },
+      {
+        "path": "/var/log/postgresql/postgresql-16-main.log.1",
+        "priority": "medium",
+        "description": "Rotated PostgreSQL log (recent)"
+      },
+      {
+        "path": "/var/log/postgresql/pg_stat_statements.log",
+        "priority": "low",
+        "description": "Query statistics log"
+      }
+    ],
+    "processes": [
+      {
+        "name": "postgres",
+        "expected_min_count": 1,
+        "expected_max_count": 4,
+        "parent": "postgres"
+      },
+      {
+        "name": "pgbouncer",
+        "expected_min_count": 1,
+        "expected_max_count": 1
+      }
+    ],
+    "systemd_units": [
+      "postgresql@16-main.service",
+      "postgresql-exporter.service"
+    ],
+    "env_variables": [
+      "PGDATA",
+      "PGPORT",
+      "POSTGRES_PASSWORD"
+    ],
+    "network": {
+      "ports": [
+        { "port": 5432, "protocol": "tcp" },
+        { "port": 6432, "protocol": "tcp" }
+      ]
+    }
+  }
+}
