@@ -13,7 +13,6 @@ from jaime.diagnostics import (
     validate_diagnostics,
     build_prompt,
     write_diagnostics_file,
-    read_diagnostics_file,
     make_empty_plan,
 )
 from jaime.principal import StatusTracker
@@ -81,12 +80,25 @@ class JaimeCharm(CharmBase):
 
         now = datetime.datetime.now(datetime.timezone.utc)
 
+        # Build the set of units actually related to this Jaime instance.
+        # goal-state can return units from other relations on the same machine
+        # (e.g. when two subordinates share a host), so we must filter to only
+        # our own principal units.
+        own_principal_units: set[str] = set()
+        for rel in self.model.relations.get("principal", []):
+            for unit in rel.units:
+                own_principal_units.add(unit.name)
+
         try:
             from ops.hookcmds import goal_state
             gs = goal_state()
             principal_relations = gs.relations.get("principal", {})
             for unit_name, goal in principal_relations.items():
                 if "/" not in unit_name:
+                    continue
+                # Skip units that don't belong to this Jaime's principal relation.
+                # Allow all when own_principal_units is empty (e.g. relation not yet established).
+                if own_principal_units and unit_name not in own_principal_units:
                     continue
 
                 status = goal.status
@@ -208,9 +220,14 @@ class JaimeCharm(CharmBase):
                 )
                 log_window = self.model.config.get("log-window-minutes", 30)
                 max_lines = self.model.config.get("max-context-lines", 500)
-                plan = read_diagnostics_file(self._diagnostics_path)
+                # Anchor logs to when this incident was opened, not when the
+                # principal first entered the watched status. This ensures that
+                # after a reset, a re-opened incident collects fresh logs rather
+                # than logs anchored to the original (possibly old) failure time.
+                incident_opened_dt = datetime.datetime.fromisoformat(incident.opened_at)
                 context = collect_context(
-                    unit_name, log_window, max_lines, diagnostics_plan=plan,
+                    unit_name, log_window, max_lines,
+                    from_time=incident_opened_dt,
                 )
                 write_event({
                     "event": "context-collected",
@@ -296,8 +313,8 @@ class JaimeCharm(CharmBase):
             return
 
         write_diagnostics_file(plan, self._diagnostics_path)
-        logger.info("diagnostics plan written to %s", self._diagnostics_path)
-        self.unit.status = ActiveStatus("diagnostics configured")
+        logger.info("monitoring plan written to %s", self._diagnostics_path)
+        self.unit.status = ActiveStatus("Ready")
 
     def _generate_diagnostics(self):
         principal_name = self._get_principal_name()
@@ -308,32 +325,48 @@ class JaimeCharm(CharmBase):
 
         provider = self._get_ai_provider()
         if provider is None:
-            logger.info("no AI provider configured, writing empty diagnostics plan")
+            logger.info("no AI provider configured, writing empty monitoring plan")
             plan = make_empty_plan(principal_name)
             write_diagnostics_file(plan, self._diagnostics_path)
-            self.unit.status = ActiveStatus("empty diagnostics plan (no AI)")
+            self.unit.status = ActiveStatus("Ready")
             return
 
         logger.info("generating diagnostics plan for '%s' via %s", principal_name, self.model.config.get("provider"))
         try:
             prompt = build_prompt(principal_name)
             response = provider.generate(prompt)
-            plan = json.loads(response)
+
+            # Gemini may wrap the JSON in markdown fences despite being asked not to.
+            # Strip ```json ... ``` or ``` ... ``` blocks if present.
+            stripped = response.strip()
+            if stripped.startswith("```"):
+                lines = stripped.splitlines()
+                inner = "\n".join(lines[1:-1]) if lines[-1].strip() == "```" else "\n".join(lines[1:])
+                stripped = inner.strip()
+
+            if not stripped:
+                raise ValueError("AI provider returned an empty response")
+
+            plan = json.loads(stripped)
             plan["generated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
         except Exception as e:
-            logger.error("AI diagnostics generation failed: %s", e)
-            self.unit.status = BlockedStatus("diagnostics generation failed")
+            logger.error("monitoring plan generation failed: %s — falling back to empty plan", e)
+            plan = make_empty_plan(principal_name)
+            write_diagnostics_file(plan, self._diagnostics_path)
+            self.unit.status = ActiveStatus("Ready")
             return
 
         errors = validate_diagnostics(plan)
         if errors:
-            logger.error("AI generated invalid diagnostics plan: %s", errors)
-            self.unit.status = BlockedStatus("AI generated invalid diagnostics")
+            logger.error("AI generated invalid monitoring plan: %s — falling back to empty plan", errors)
+            plan = make_empty_plan(principal_name)
+            write_diagnostics_file(plan, self._diagnostics_path)
+            self.unit.status = ActiveStatus("Ready")
             return
 
         write_diagnostics_file(plan, self._diagnostics_path)
-        logger.info("AI-generated diagnostics plan written to %s", self._diagnostics_path)
-        self.unit.status = ActiveStatus("diagnostics generated by AI")
+        logger.info("AI-generated monitoring plan written to %s", self._diagnostics_path)
+        self.unit.status = ActiveStatus("Ready")
 
     def _get_principal_name(self):
         try:
@@ -437,6 +470,7 @@ class JaimeCharm(CharmBase):
         unit_name = None
         workload = None
         first_seen = None
+        incident_opened_at = None
         for uname, entry in self._status_tracker._state.items():
             inc = entry.get("incident")
             if inc and inc.get("closed_at") is None:
@@ -444,6 +478,7 @@ class JaimeCharm(CharmBase):
                 unit_name = uname
                 workload = entry.get("status", "unknown")
                 first_seen = entry.get("since", "")
+                incident_opened_at = inc.get("opened_at")
                 break
 
         if not incident_id:
@@ -454,25 +489,11 @@ class JaimeCharm(CharmBase):
         max_lines = self.model.config.get("max-context-lines", 500)
         report_dir = self.model.config.get("report-dir", "")
 
-        plan = read_diagnostics_file(self._diagnostics_path)
+        opened_dt = datetime.datetime.fromisoformat(incident_opened_at) if incident_opened_at else None
         context = collect_context(
-            unit_name, log_window, max_lines, diagnostics_plan=plan,
+            unit_name, log_window, max_lines,
+            from_time=opened_dt,
         )
-
-        # Base report
-        base_report_path = generate_report(
-            incident_id=incident_id,
-            unit_name=unit_name,
-            workload=workload,
-            first_seen=first_seen,
-            context=context,
-            report_dir=report_dir,
-        )
-        with open(base_report_path) as f:
-            base_content = f.read()
-
-        ai_suggestions, act_results = self._run_mode_logic(base_content)
-
         report_path = generate_report(
             incident_id=incident_id,
             unit_name=unit_name,

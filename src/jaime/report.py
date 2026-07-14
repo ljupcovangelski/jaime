@@ -60,19 +60,8 @@ def generate_report(
     # Background sections
     _append_section_disk(lines, context)
     _append_section_memory(lines, context)
+    _append_section_tracing(lines, context)
     _append_section_logs(lines, context)
-
-    # Unit logs
-    unit_logs = context.get("unit_logs", [])
-    lines.append("## Recent unit logs")
-    lines.append("")
-    if unit_logs:
-        lines.append("```")
-        lines += unit_logs
-        lines.append("```")
-    else:
-        lines.append("_No recent logs found._")
-    lines.append("")
 
     content = "\n".join(lines)
 
@@ -220,7 +209,30 @@ def _append_section_memory(lines: list[str], context: dict) -> None:
 def _append_section_logs(lines: list[str], context: dict) -> None:
     unit_logs = context.get("unit_logs", [])
     _append(lines, ["## Recent unit logs"])
+    _append(lines, ["_Logs are in chronological order. Read from bottom to top — the most recent and relevant entries are at the end._"])
     if unit_logs:
         _append(lines, ["```", *unit_logs, "```"])
     else:
         _append(lines, ["_No recent logs found._"])
+
+
+def _append_section_tracing(lines: list[str], context: dict) -> None:
+    events = context.get("tracing_events", [])
+    if not events:
+        return
+
+    _append(lines, ["## Charm events (Ops tracing)"])
+    _append(lines, ["_Events in chronological order. The most recent are at the bottom._"])
+
+    rows = ["| Timestamp | Event | Kind | Error |", "|---|---|---|---|"]
+    for evt in events:
+        ts = evt.get("timestamp", "")
+        name = evt.get("event", "")
+        kind = evt.get("kind", "")
+        exc = evt.get("exception_type", "")
+        msg = evt.get("exception_message", "")
+        error_col = f"`{exc}`: {msg}" if exc else ""
+        rows.append(f"| `{ts}` | `{name}` | `{kind}` | {error_col} |")
+
+    _append(lines, rows)
+

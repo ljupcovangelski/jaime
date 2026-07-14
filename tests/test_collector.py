@@ -1,6 +1,7 @@
 """Unit tests for jaime.collector (context collection)."""
 
 import datetime
+import json
 import os
 import sys
 import unittest.mock as mock
@@ -16,10 +17,36 @@ from jaime.collector import (
     collect_disk_usage,
     collect_memory_summary,
     collect_systemd_failed,
+    collect_tracing_events,
     collect_unit_logs,
     _tail_lines,
 )
 
+
+def _make_tracing_payload(events: list[tuple[str, str, str]], ts_ns: int) -> bytes:
+    """Build a minimal OTLP JSON payload for testing."""
+    evt_list = []
+    for name, kind, exc_type in events:
+        evt_list.append({
+            "name": name,
+            "timeUnixNano": str(ts_ns),
+            "attributes": [{"key": "kind", "value": {"stringValue": kind}}],
+        })
+        if exc_type:
+            evt_list.append({
+                "name": "exception",
+                "timeUnixNano": str(ts_ns),
+                "attributes": [
+                    {"key": "exception.type", "value": {"stringValue": exc_type}},
+                    {"key": "exception.message", "value": {"stringValue": "test error"}},
+                ],
+            })
+    payload = {"resourceSpans": [{"scopeSpans": [{"scope": {"name": "ops"}, "spans": [{
+        "name": "ops.main",
+        "startTimeUnixNano": str(ts_ns),
+        "events": evt_list,
+    }]}]}]}
+    return json.dumps(payload).encode()
 
 class TestTailLines:
     def test_returns_all_lines_when_under_limit(self):
@@ -82,6 +109,72 @@ class TestCollectUnitLogs:
         assert not any("old line" in l for l in result)
         assert any("recent line" in l for l in result)
 
+    def test_from_time_anchors_to_incident_start(self, tmp_path):
+        """Logs before from_time - buffer should be excluded."""
+        log_file = tmp_path / "unit-postgresql-0.log"
+        now = datetime.datetime.now(datetime.timezone.utc)
+        # Line from 20 minutes ago (before incident, should be excluded)
+        old_ts = (now - datetime.timedelta(minutes=20)).strftime("%Y-%m-%d %H:%M:%S")
+        # Incident started 3 minutes ago (from_time = now - 3min)
+        from_time = now - datetime.timedelta(minutes=3)
+        # Line from 6 minutes ago (within buffer of 5min before from_time → included)
+        buffered_ts = (now - datetime.timedelta(minutes=7)).strftime("%Y-%m-%d %H:%M:%S")
+        # Line from 1 minute ago (clearly within window → included)
+        recent_ts = (now - datetime.timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S")
+        log_file.write_text(
+            f"{old_ts} INFO pre-incident noise\n"
+            f"{buffered_ts} WARNING near incident start\n"
+            f"{recent_ts} ERROR incident error\n"
+        )
+        import jaime.collector as jcollector
+        with mock.patch.object(jcollector, "_JUJU_LOG_DIR", str(tmp_path)):
+            result = collect_unit_logs(
+                "postgresql/0", log_window_minutes=60,
+                from_time=from_time, buffer_minutes=5,
+            )
+        assert not any("pre-incident noise" in l for l in result)
+        assert any("near incident start" in l for l in result)
+        assert any("incident error" in l for l in result)
+
+    def test_from_time_capped_by_log_window(self, tmp_path):
+        """from_time far in the past is capped by log_window_minutes."""
+        log_file = tmp_path / "unit-postgresql-0.log"
+        now = datetime.datetime.now(datetime.timezone.utc)
+        # Line from 90 minutes ago — beyond log_window of 60 min, must be excluded
+        very_old_ts = (now - datetime.timedelta(minutes=90)).strftime("%Y-%m-%d %H:%M:%S")
+        # Line from 30 minutes ago — within log_window, must be included
+        recent_ts = (now - datetime.timedelta(minutes=30)).strftime("%Y-%m-%d %H:%M:%S")
+        log_file.write_text(
+            f"{very_old_ts} INFO very old line\n"
+            f"{recent_ts} INFO recent line\n"
+        )
+        # from_time is 2 hours ago with buffer=5 → would go to 2h5m, but capped at 60min
+        from_time = now - datetime.timedelta(hours=2)
+        import jaime.collector as jcollector
+        with mock.patch.object(jcollector, "_JUJU_LOG_DIR", str(tmp_path)):
+            result = collect_unit_logs(
+                "postgresql/0", log_window_minutes=60,
+                from_time=from_time, buffer_minutes=5,
+            )
+        assert not any("very old line" in l for l in result)
+        assert any("recent line" in l for l in result)
+
+    def test_without_from_time_uses_rolling_window(self, tmp_path):
+        """Without from_time, original rolling window behaviour is preserved."""
+        log_file = tmp_path / "unit-postgresql-0.log"
+        now = datetime.datetime.now(datetime.timezone.utc)
+        old_ts = (now - datetime.timedelta(minutes=120)).strftime("%Y-%m-%d %H:%M:%S")
+        recent_ts = now.strftime("%Y-%m-%d %H:%M:%S")
+        log_file.write_text(
+            f"{old_ts} INFO old rolling line\n"
+            f"{recent_ts} INFO new rolling line\n"
+        )
+        import jaime.collector as jcollector
+        with mock.patch.object(jcollector, "_JUJU_LOG_DIR", str(tmp_path)):
+            result = collect_unit_logs("postgresql/0", log_window_minutes=60)
+        assert not any("old rolling line" in l for l in result)
+        assert any("new rolling line" in l for l in result)
+
 
 class TestCollectSystemdFailed:
     def test_returns_list(self):
@@ -134,7 +227,70 @@ class TestCollectContext:
         assert "+00:00" in ctx["collected_at"] or ctx["collected_at"].endswith("Z")
 
 
-class TestCollectLogFiles:
+class TestCollectTracingEvents:
+    def _make_db(self, tmp_path, rows: list) -> str:
+        import sqlite3 as _sq
+        db_path = str(tmp_path / ".tracing-data.db")
+        conn = _sq.connect(db_path)
+        conn.execute("CREATE TABLE tracing (id INTEGER PRIMARY KEY AUTOINCREMENT, state INTEGER, data BLOB, content_type TEXT)")
+        for data in rows:
+            conn.execute("INSERT INTO tracing (state, data, content_type) VALUES (50, ?, 'application/json')", (data,))
+        conn.commit()
+        conn.close()
+        return db_path
+
+    def _unit_tag(self, unit_name: str) -> str:
+        return "unit-" + unit_name.replace("/", "-")
+
+    def test_returns_events_from_db(self, tmp_path):
+        ts_ns = int(datetime.datetime(2026, 7, 14, 10, 0, 0, tzinfo=datetime.timezone.utc).timestamp() * 1e9)
+        data = _make_tracing_payload([("RelationBrokenEvent", "relation_broken", ""), ("ConfigChangedEvent", "config_changed", "")], ts_ns)
+        db_path = self._make_db(tmp_path, [data])
+        tag = self._unit_tag("postgresql/0")
+        with mock.patch("jaime.collector.sqlite3.connect", return_value=__import__("sqlite3").connect(db_path)):
+            result = collect_tracing_events("postgresql/0")
+        assert any(e["event"] == "RelationBrokenEvent" for e in result)
+        assert any(e["event"] == "ConfigChangedEvent" for e in result)
+
+    def test_attaches_exception_to_previous_event(self, tmp_path):
+        ts_ns = int(datetime.datetime(2026, 7, 14, 10, 0, 0, tzinfo=datetime.timezone.utc).timestamp() * 1e9)
+        data = _make_tracing_payload([("RelationBrokenEvent", "relation_broken", "ValueError")], ts_ns)
+        db_path = self._make_db(tmp_path, [data])
+        with mock.patch("jaime.collector.sqlite3.connect", return_value=__import__("sqlite3").connect(db_path)):
+            result = collect_tracing_events("postgresql/0")
+        assert len(result) == 1
+        assert result[0]["exception_type"] == "ValueError"
+        assert result[0]["exception_message"] == "test error"
+
+    def test_returns_empty_when_db_missing(self):
+        result = collect_tracing_events("nonexistent/0")
+        assert result == []
+
+    def test_filters_by_from_time(self, tmp_path):
+        old_ts_ns = int(datetime.datetime(2026, 7, 14, 9, 0, 0, tzinfo=datetime.timezone.utc).timestamp() * 1e9)
+        new_ts_ns = int(datetime.datetime(2026, 7, 14, 11, 0, 0, tzinfo=datetime.timezone.utc).timestamp() * 1e9)
+        old_data = _make_tracing_payload([("InstallEvent", "install", "")], old_ts_ns)
+        new_data = _make_tracing_payload([("ConfigChangedEvent", "config_changed", "")], new_ts_ns)
+        db_path = self._make_db(tmp_path, [old_data, new_data])
+        from_time = datetime.datetime(2026, 7, 14, 10, 0, 0, tzinfo=datetime.timezone.utc)
+        with mock.patch("jaime.collector.sqlite3.connect", return_value=__import__("sqlite3").connect(db_path)):
+            result = collect_tracing_events("postgresql/0", from_time=from_time)
+        assert not any(e["event"] == "InstallEvent" for e in result)
+        assert any(e["event"] == "ConfigChangedEvent" for e in result)
+
+    def test_skips_commit_events(self, tmp_path):
+        ts_ns = int(datetime.datetime(2026, 7, 14, 10, 0, 0, tzinfo=datetime.timezone.utc).timestamp() * 1e9)
+        data = _make_tracing_payload([
+            ("UpdateStatusEvent", "update_status", ""),
+            ("PreCommitEvent", "pre_commit", ""),
+            ("CommitEvent", "commit", ""),
+        ], ts_ns)
+        db_path = self._make_db(tmp_path, [data])
+        with mock.patch("jaime.collector.sqlite3.connect", return_value=__import__("sqlite3").connect(db_path)):
+            result = collect_tracing_events("postgresql/0")
+        assert not any(e["event"] in ("PreCommitEvent", "CommitEvent") for e in result)
+
+
     def test_available_file_returns_lines(self, tmp_path):
         log = tmp_path / "test.log"
         log.write_text("line1\nline2\nline3\n")

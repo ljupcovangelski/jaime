@@ -5,9 +5,11 @@ any state. All collection is read-only and bounded by time and line count.
 """
 
 import datetime
+import json
 import logging
 import os
 import re
+import sqlite3
 import subprocess
 
 logger = logging.getLogger(__name__)
@@ -28,6 +30,105 @@ def _run(cmd: list[str], timeout: int = 10) -> str:
         return ""
 
 
+def collect_tracing_events(
+    unit_name: str,
+    from_time: datetime.datetime | None = None,
+    max_events: int = 50,
+    buffer_minutes: int = 5,
+) -> list[dict]:
+    """Read recent Ops framework events from the principal unit's tracing DB.
+
+    The tracing DB (``.tracing-data.db``) is written by the Ops framework's
+    built-in OpenTelemetry tracing layer. It only exists for charms that use
+    the Ops framework with tracing enabled. Returns an empty list if the file
+    is absent, unreadable, or not an Ops tracing DB.
+
+    Each returned dict has:
+      - ``timestamp``: ISO 8601 UTC
+      - ``event``: Ops event name (e.g. ``UpdateStatusEvent``)
+      - ``kind``: hook kind (e.g. ``update_status``)
+      - ``exception_type``: exception class name if the hook failed, else ``""``
+      - ``exception_message``: first line of exception message, else ``""``
+    """
+    tag = "unit-" + unit_name.replace("/", "-")
+    db_path = f"/var/lib/juju/agents/{tag}/charm/.tracing-data.db"
+
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2)
+    except Exception as e:
+        logger.debug("tracing DB not accessible for %s: %s", unit_name, e)
+        return []
+
+    if from_time is not None:
+        from_time = from_time - datetime.timedelta(minutes=buffer_minutes)
+
+    events = []
+    try:
+        rows = conn.execute(
+            "SELECT data FROM tracing ORDER BY id DESC LIMIT 500"
+        ).fetchall()
+
+        for (data,) in rows:
+            try:
+                payload = json.loads(data)
+            except Exception:
+                continue
+
+            for rs in payload.get("resourceSpans", []):
+                for ss in rs.get("scopeSpans", []):
+                    for span in ss.get("spans", []):
+                        if span.get("name") != "ops.main":
+                            continue
+
+                        ts_ns = int(span.get("startTimeUnixNano", 0))
+                        ts = datetime.datetime.fromtimestamp(
+                            ts_ns / 1e9, tz=datetime.timezone.utc
+                        )
+
+                        if from_time and ts < from_time:
+                            continue
+
+                        for evt in span.get("events", []):
+                            evt_name = evt.get("name", "")
+                            if evt_name in (
+                                "PreCommitEvent", "CommitEvent",
+                                "CollectAppStatusEvent", "CollectUnitStatusEvent",
+                                "UpdateStatusEvent",
+                            ):
+                                continue
+
+                            attrs = {
+                                a["key"]: list(a["value"].values())[0]
+                                for a in evt.get("attributes", [])
+                            }
+
+                            if evt_name == "exception":
+                                # Attach exception to the previous event if any
+                                if events:
+                                    events[-1]["exception_type"] = attrs.get(
+                                        "exception.type", ""
+                                    )
+                                    msg = attrs.get("exception.message", "")
+                                    events[-1]["exception_message"] = msg.splitlines()[0] if msg else ""
+                                continue
+
+                            events.append({
+                                "timestamp": ts.isoformat(),
+                                "event": evt_name,
+                                "kind": attrs.get("kind", ""),
+                                "exception_type": "",
+                                "exception_message": "",
+                            })
+
+        conn.close()
+    except Exception as e:
+        logger.debug("could not read tracing DB for %s: %s", unit_name, e)
+        return []
+
+    # Sort ascending by timestamp, return most recent max_events
+    events.sort(key=lambda e: e["timestamp"])
+    return events[-max_events:]
+
 def _tail_lines(text: str, max_lines: int) -> list[str]:
     lines = text.splitlines()
     return lines[-max_lines:] if len(lines) > max_lines else lines
@@ -37,7 +138,19 @@ def collect_unit_logs(
     unit_name: str,
     log_window_minutes: int = _DEFAULT_LOG_WINDOW_MINUTES,
     max_lines: int = _DEFAULT_MAX_LINES,
+    from_time: datetime.datetime | None = None,
+    buffer_minutes: int = 5,
 ) -> list[str]:
+    """Read recent lines from the principal unit's Juju log file.
+
+    The log window is anchored to ``from_time`` when provided (typically the
+    incident's ``first_seen`` timestamp).  Lines before
+    ``from_time - buffer_minutes`` are excluded.  ``log_window_minutes`` still
+    acts as a hard cap so very old incidents don't pull unbounded history.
+
+    When ``from_time`` is None the window falls back to
+    ``now - log_window_minutes`` (the original behaviour).
+    """
     tag = "unit-" + unit_name.replace("/", "-")
     log_path = os.path.join(_JUJU_LOG_DIR, f"{tag}.log")
 
@@ -51,9 +164,15 @@ def collect_unit_logs(
         logger.debug("could not read %s: %s", log_path, e)
         return []
 
-    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
-        minutes=log_window_minutes
-    )
+    now = datetime.datetime.now(datetime.timezone.utc)
+    earliest_allowed = now - datetime.timedelta(minutes=log_window_minutes)
+
+    if from_time is not None:
+        cutoff = from_time - datetime.timedelta(minutes=buffer_minutes)
+        # Never go further back than log_window_minutes
+        cutoff = max(cutoff, earliest_allowed)
+    else:
+        cutoff = earliest_allowed
 
     recent = []
     for line in raw_lines:
@@ -216,18 +335,29 @@ def collect_context(
     log_window_minutes: int = _DEFAULT_LOG_WINDOW_MINUTES,
     max_lines: int = _DEFAULT_MAX_LINES,
     diagnostics_plan: dict | None = None,
+    from_time: datetime.datetime | None = None,
+    buffer_minutes: int = 5,
 ) -> dict:
     """Collect all context for an incident.
 
+    ``from_time`` should be set to the incident's ``first_seen`` datetime so
+    that unit logs are anchored to the start of the incident rather than the
+    current time, avoiding noise from unrelated prior events.
+
     If ``diagnostics_plan`` is provided with non-empty sections, collection is
     driven by the plan (only what the plan specifies).  If a section is empty
-    or ``diagnostics_plan`` is None, a broad fallback is used for that section
-    (e.g. ``ps aux`` for processes, ``ss -tlnp`` for ports).
+    or ``diagnostics_plan`` is None, a broad fallback is used for that section.
 
     Background context (unit logs, disk usage, memory) is always collected.
     """
     context = {
-        "unit_logs": collect_unit_logs(unit_name, log_window_minutes, max_lines),
+        "unit_logs": collect_unit_logs(
+            unit_name, log_window_minutes, max_lines,
+            from_time=from_time, buffer_minutes=buffer_minutes,
+        ),
+        "tracing_events": collect_tracing_events(
+            unit_name, from_time=from_time, buffer_minutes=buffer_minutes,
+        ),
         "disk_usage": collect_disk_usage(),
         "memory_summary": collect_memory_summary(),
         "collected_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
