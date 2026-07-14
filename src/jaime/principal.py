@@ -17,14 +17,18 @@ class StatusTracker:
         {
             "postgresql/0": {
                 "status": "blocked",
+                "since": "2026-07-14T09:37:54+00:00",
                 "increment": 3,
-                "last_reported": "2026-07-13T16:01:46+00:00"
+                "incident": {
+                    "id": "550e8400-e29b-41d4-a716-446655440000",
+                    "opened_at": "2026-07-14T09:39:39+00:00"
+                },
+                "last_reported": "2026-07-14T09:39:39+00:00"
             }
         }
 
-    The increment resets to 1 when the status changes.
-    last_reported is set when an incident event is emitted and used to
-    enforce the cooldown period.
+    The increment resets to 1 when the status or since changes (new episode).
+    incident and last_reported are cleared on a new episode.
     """
 
     def __init__(self, state_path: str = _DEFAULT_STATE_PATH):
@@ -52,9 +56,8 @@ class StatusTracker:
     def observe(self, unit: str, status: str, since: str) -> int:
         """Record a status observation for a unit.
 
-        ``since`` is the ISO timestamp from goal-state marking when the current
-        status began. A change in either ``status`` or ``since`` is treated as
-        a new episode: the increment and last_reported are both reset.
+        A change in either ``status`` or ``since`` is treated as a new episode:
+        the increment, incident, and last_reported are all reset.
 
         Returns the current increment.
         """
@@ -70,17 +73,36 @@ class StatusTracker:
                 "status": status,
                 "since": since,
                 "increment": previous.get("increment", 0) + 1,
+                "incident": previous.get("incident"),
                 "last_reported": previous.get("last_reported"),
             }
         self._save()
         return self._state[unit]["increment"]
 
-    def record_reported(self, unit: str, timestamp: str) -> None:
-        """Record that an incident event was emitted for this unit."""
+    def record_reported(self, unit: str, timestamp: str, incident_dict: dict) -> None:
+        """Record that an incident was opened and reported for this unit."""
         if unit in self._state:
             self._state[unit]["last_reported"] = timestamp
+            self._state[unit]["incident"] = incident_dict
             self._save()
+
+    def close_incident(self, unit: str, closed_incident_dict: dict) -> None:
+        """Record the closed incident for a unit."""
+        if unit in self._state:
+            self._state[unit]["incident"] = closed_incident_dict
+            self._save()
+
+    def has_open_incident(self, unit: str) -> bool:
+        """Return True if there is an open (not yet closed) incident for a unit."""
+        incident = self._state.get(unit, {}).get("incident")
+        if not incident:
+            return False
+        return incident.get("closed_at") is None
 
     def last_reported(self, unit: str) -> str | None:
         """Return the ISO timestamp of the last reported incident, or None."""
         return self._state.get(unit, {}).get("last_reported")
+
+    def current_incident(self, unit: str) -> dict | None:
+        """Return the current incident dict for a unit, or None."""
+        return self._state.get(unit, {}).get("incident")
