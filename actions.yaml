@@ -7,6 +7,9 @@ collect-context:
 generate-report:
   description: "Generate and return a Markdown report for the current open incident. Fails if no incident is open."
   params: {}
+get-suggestion:
+  description: "Return the AI suggestion for the current open incident. Fails if no incident is open or no suggestion has been generated yet."
+  params: {}
 show-status:
   description: "Show the current monitoring state: principal unit workload, active incident if any, and last observation."
   params: {}

@@ -17,7 +17,7 @@ from jaime.diagnostics import (
     make_empty_plan,
 )
 from jaime.principal import StatusTracker
-from jaime.incident import Incident
+from jaime.incident import Incident, Suggestion
 from jaime.collector import collect_context
 from jaime.report import generate_report
 from jaime.logging import write_event
@@ -42,6 +42,7 @@ class JaimeCharm(CharmBase):
         self.framework.observe(self.on.diagnose_action, self._on_action_diagnose)
         self.framework.observe(self.on.collect_context_action, self._on_action_collect_context)
         self.framework.observe(self.on.generate_report_action, self._on_action_generate_report)
+        self.framework.observe(self.on.get_suggestion_action, self._on_action_get_suggestion)
         self.framework.observe(self.on.show_status_action, self._on_action_show_status)
         self.framework.observe(self.on.reset_action, self._on_action_reset)
 
@@ -201,7 +202,7 @@ class JaimeCharm(CharmBase):
                     "timestamp": now.isoformat(),
                 }, self.model.config.get("audit-log-path", ""))
 
-                # Collect bounded context
+                # Generate report (context only — input for the LLM)
                 self.unit.status = MaintenanceStatus(
                     f"collecting context: {status} ({short_id})"
                 )
@@ -219,23 +220,6 @@ class JaimeCharm(CharmBase):
                     "timestamp": now.isoformat(),
                 }, self.model.config.get("audit-log-path", ""))
 
-                # Generate report
-                self.unit.status = MaintenanceStatus(
-                    f"generating report: {status} ({short_id})"
-                )
-                base_report_path = generate_report(
-                    incident_id=incident.id,
-                    unit_name=unit_name,
-                    workload=status,
-                    first_seen=since_iso,
-                    context=context,
-                    report_dir=self.model.config.get("report-dir", ""),
-                )
-                with open(base_report_path) as f:
-                    base_content = f.read()
-
-                ai_suggestions, act_results = self._run_mode_logic(base_content)
-
                 report_path = generate_report(
                     incident_id=incident.id,
                     unit_name=unit_name,
@@ -243,21 +227,32 @@ class JaimeCharm(CharmBase):
                     first_seen=since_iso,
                     context=context,
                     report_dir=self.model.config.get("report-dir", ""),
-                    ai_suggestions=ai_suggestions,
-                    act_results=act_results or None,
                 )
                 write_event({
                     "event": "report-generated",
                     "unit": unit_name,
                     "incident_id": incident.id,
                     "report_path": report_path,
-                    "mode": self.model.config.get("mode", "observe"),
                     "timestamp": now.isoformat(),
                 }, self.model.config.get("audit-log-path", ""))
-                logger.info(
-                    "incident %s: report written to %s",
-                    short_id, report_path,
-                )
+                logger.info("incident %s: report written to %s", short_id, report_path)
+
+                # Run suggest/act: produce a Suggestion and attach it to the incident
+                with open(report_path) as f:
+                    report_content = f.read()
+
+                suggestion = self._run_mode_logic(report_content)
+                if suggestion is not None:
+                    updated = incident.attach_suggestion(suggestion)
+                    self._status_tracker.update_incident(unit_name, updated.to_dict())
+                    write_event({
+                        "event": "suggestion-generated",
+                        "unit": unit_name,
+                        "incident_id": incident.id,
+                        "commands": list(suggestion.commands),
+                        "mode": self.model.config.get("mode", "observe"),
+                        "timestamp": now.isoformat(),
+                    }, self.model.config.get("audit-log-path", ""))
                 # Only update to active if no provider error was set.
                 if not isinstance(self.unit.status, BlockedStatus):
                     self.unit.status = ActiveStatus(
@@ -349,30 +344,28 @@ class JaimeCharm(CharmBase):
             pass
         return None
 
-    def _run_mode_logic(self, report_content: str) -> tuple[str, list]:
+    def _run_mode_logic(self, report_content: str) -> "Suggestion | None":
         """Run suggest or act logic based on the configured mode.
 
-        Returns (ai_suggestions, act_results).
-        Returns ("", []) in observe mode or when no provider is configured.
+        Returns a Suggestion, or None in observe mode / on error.
         Sets BlockedStatus if the AI provider call fails.
         """
         mode = self.model.config.get("mode", "observe")
         if mode not in ("suggest", "act"):
-            return "", []
+            return None
 
         provider = self._get_ai_provider()
         if provider is None:
             logger.warning("mode is '%s' but no AI provider is configured", mode)
             self.unit.status = BlockedStatus(f"mode={mode} but no AI provider configured")
-            return "", []
+            return None
 
         try:
             if mode == "suggest":
-                suggestions = run_suggest(provider, report_content)
-                return suggestions, []
+                return run_suggest(provider, report_content)
 
             # act mode
-            suggestions, act_results = run_act(provider, report_content)
+            suggestion, act_results = run_act(provider, report_content)
             for result in act_results:
                 write_event({
                     "event": "act-command-executed",
@@ -381,12 +374,12 @@ class JaimeCharm(CharmBase):
                     "stderr": result.get("stderr", ""),
                     "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 }, self.model.config.get("audit-log-path", ""))
-            return suggestions, act_results
+            return suggestion
 
         except Exception as e:
             logger.error("AI provider call failed in mode '%s': %s", mode, e)
             self.unit.status = BlockedStatus(f"AI provider error: {str(e)[:60]}")
-            return "", []
+            return None
 
     def _get_ai_provider(self):
         provider_name = self.model.config.get("provider", "none")
@@ -424,15 +417,12 @@ class JaimeCharm(CharmBase):
             principal = None
 
         result = {
-            "principal": {
-                "unit": principal or "unknown",
-                "status": "unknown",
-                "charm_version": "unknown",
-            },
-            "jaime": {"unit": self.unit.name, "mode": self.model.config.get("mode")},
+            "principal-unit": principal or "unknown",
+            "jaime-unit": self.unit.name,
+            "jaime-mode": self.model.config.get("mode"),
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }
-        event.set_results({"diagnose": result})
+        event.set_results(result)
 
     def _on_action_collect_context(self, event):
         logger.info("collect-context action invoked")
@@ -490,8 +480,6 @@ class JaimeCharm(CharmBase):
             first_seen=first_seen,
             context=context,
             report_dir=report_dir,
-            ai_suggestions=ai_suggestions,
-            act_results=act_results or None,
         )
         with open(report_path) as f:
             content = f.read()
@@ -501,6 +489,27 @@ class JaimeCharm(CharmBase):
             "report-path": report_path,
             "report": content,
         })
+
+    def _on_action_get_suggestion(self, event):
+        """Return the AI suggestion for the current open incident."""
+        logger.info("get-suggestion action invoked")
+
+        for entry in self._status_tracker._state.values():
+            inc = entry.get("incident")
+            if inc and inc.get("closed_at") is None:
+                suggestion = inc.get("suggestion")
+                if not suggestion:
+                    event.fail("no suggestion available for the current incident")
+                    return
+                event.set_results({
+                    "incident-id": inc["id"],
+                    "description": suggestion["description"],
+                    "commands": json.dumps(suggestion["commands"]),
+                    "generated-at": suggestion["generated_at"],
+                })
+                return
+
+        event.fail("no open incident found")
 
     def _on_action_show_status(self, event):
         """Return the current monitoring state for all tracked principal units."""

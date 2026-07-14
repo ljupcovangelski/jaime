@@ -14,6 +14,7 @@ from jaime.suggest import (
     run_act,
     run_suggest,
 )
+from jaime.incident import Suggestion
 
 
 class TestBuildSuggestPrompt:
@@ -74,17 +75,19 @@ class TestExecuteCommand:
 
 
 class TestRunSuggest:
-    def test_returns_llm_response(self):
+    def test_returns_suggestion(self):
         provider = mock.MagicMock()
-        provider.generate.return_value = "The issue is X. Run: ```bash\nsystemctl status\n```"
+        provider.generate.return_value = "The issue is X.\n```bash\nsystemctl status\n```"
         result = run_suggest(provider, "report content")
-        assert result == "The issue is X. Run: ```bash\nsystemctl status\n```"
+        assert isinstance(result, Suggestion)
+        assert "The issue is X." in result.description
+        assert "systemctl status" in result.commands
         provider.generate.assert_called_once()
 
-    def test_returns_empty_when_no_provider(self):
-        assert run_suggest(None, "report content") == ""
+    def test_returns_none_when_no_provider(self):
+        assert run_suggest(None, "report content") is None
 
-    def test_returns_empty_on_provider_failure(self):
+    def test_raises_on_provider_failure(self):
         provider = mock.MagicMock()
         provider.generate.side_effect = RuntimeError("API error")
         with pytest.raises(RuntimeError):
@@ -92,11 +95,12 @@ class TestRunSuggest:
 
 
 class TestRunAct:
-    def test_returns_llm_response_and_results(self):
+    def test_returns_suggestion_and_results(self):
         provider = mock.MagicMock()
         provider.generate.return_value = "```bash\necho hello\n```"
-        llm_resp, results = run_act(provider, "report")
-        assert llm_resp != ""
+        suggestion, results = run_act(provider, "report")
+        assert isinstance(suggestion, Suggestion)
+        assert "echo hello" in suggestion.commands
         assert len(results) == 1
         assert results[0]["command"] == "echo hello"
 
@@ -115,7 +119,7 @@ class TestRunAct:
         mock_exec.assert_not_called()
         assert "dry-run" in results[0]["stderr"]
 
-    def test_returns_empty_when_no_provider(self):
-        llm_resp, results = run_act(None, "report")
-        assert llm_resp == ""
+    def test_returns_none_when_no_provider(self):
+        suggestion, results = run_act(None, "report")
+        assert suggestion is None
         assert results == []

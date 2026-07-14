@@ -1,15 +1,18 @@
 """Suggest and act modes for Jaime.
 
 suggest: calls the AI provider with the incident report as context and returns
-         a diagnosis and remediation suggestions. Nothing is executed.
+         a Suggestion object containing the LLM's diagnosis and commands.
+         Nothing is executed.
 
-act:     same as suggest, but also executes every command returned by the LLM.
+act:     same as suggest, but also executes every command in the Suggestion.
          All executions are audited to the JSONL log.
 """
 
 import logging
 import re
 import subprocess
+
+from jaime.incident import Suggestion
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +27,7 @@ with 'bash', like this:
 ```bash
 systemctl status postgresql
 ```
-- Keep your response concise and focused on the incident.
+Keep your response concise and focused on the incident.
 
 Incident report:
 ---
@@ -77,36 +80,36 @@ def execute_command(command: str, timeout: int = 30) -> dict:
         return {"command": command, "returncode": -1, "stdout": "", "stderr": str(e)}
 
 
-def run_suggest(provider, report_content: str) -> str:
-    """Call the AI provider and return the raw LLM response.
+def run_suggest(provider, report_content: str) -> Suggestion:
+    """Call the AI provider and return a Suggestion.
 
-    Raises if the provider is unavailable or returns an error, so the caller
-    can surface the failure as a unit status.
-    Returns an empty string only if provider is None.
+    Raises if the provider call fails, so the caller can surface the error.
+    Returns None if provider is None.
     """
     if provider is None:
-        return ""
+        return None
     prompt = build_suggest_prompt(report_content)
-    return provider.generate(prompt)
+    llm_response = provider.generate(prompt)
+    commands = parse_commands(llm_response)
+    return Suggestion.from_llm(description=llm_response, commands=commands)
 
 
 def run_act(
     provider,
     report_content: str,
     dry_run: bool = False,
-) -> tuple[str, list[dict]]:
-    """Call the AI provider, parse commands, and execute all of them.
+) -> tuple[Suggestion | None, list[dict]]:
+    """Call the AI provider, build a Suggestion, and execute its commands.
 
-    Returns (llm_response, execution_results).
+    Returns (suggestion, execution_results).
     If dry_run is True, commands are parsed but not executed.
     """
-    llm_response = run_suggest(provider, report_content)
-    if not llm_response:
-        return llm_response, []
+    suggestion = run_suggest(provider, report_content)
+    if suggestion is None:
+        return None, []
 
-    commands = parse_commands(llm_response)
     results = []
-    for cmd in commands:
+    for cmd in suggestion.commands:
         if dry_run:
             logger.info("act dry-run: would execute: %s", cmd)
             results.append({
@@ -121,4 +124,4 @@ def run_act(
             logger.info("act: command %r exited %d", cmd, result["returncode"])
             results.append(result)
 
-    return llm_response, results
+    return suggestion, results

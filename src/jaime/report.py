@@ -1,4 +1,9 @@
-"""Markdown report generation for Jaime incidents."""
+"""Markdown report generation for Jaime incidents.
+
+A report captures the machine context at the time of the incident:
+logs, systemd state, disk, memory. It is the input provided to the LLM
+in suggest/act mode. It does not contain LLM output.
+"""
 
 import datetime
 import logging
@@ -22,9 +27,12 @@ def generate_report(
     first_seen: str,
     context: dict,
     report_dir: str = "",
-    ai_suggestions: str = "",
-    act_results: list | None = None,
 ) -> str:
+    """Generate a Markdown context report and write it to disk.
+
+    Falls back to _DEFAULT_REPORT_DIR if report_dir is empty.
+    Returns the path of the written report file.
+    """
     report_dir = report_dir or _DEFAULT_REPORT_DIR
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     lines = []
@@ -54,34 +62,17 @@ def generate_report(
     _append_section_memory(lines, context)
     _append_section_logs(lines, context)
 
-    if ai_suggestions:
-        _append(lines, [
-            "## AI Diagnosis & Suggestions",
-            "",
-            ai_suggestions.strip(),
-        ])
-
-    if act_results:
-        _append(lines, [
-            "## Act mode: executed commands",
-        ])
-        for result in act_results:
-            cmd = result.get("command", "")
-            rc = result.get("returncode")
-            stderr = result.get("stderr", "").strip()
-            stdout = result.get("stdout", "").strip()
-            status = f"exit {rc}" if rc is not None else stderr
-            _append(lines, [
-                f"### `{cmd}`",
-                "",
-                f"**Status:** {status}",
-            ])
-            if stdout:
-                _append(lines, [
-                    "```",
-                    stdout,
-                    "```",
-                ])
+    # Unit logs
+    unit_logs = context.get("unit_logs", [])
+    lines.append("## Recent unit logs")
+    lines.append("")
+    if unit_logs:
+        lines.append("```")
+        lines += unit_logs
+        lines.append("```")
+    else:
+        lines.append("_No recent logs found._")
+    lines.append("")
 
     content = "\n".join(lines)
 

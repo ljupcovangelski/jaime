@@ -7,7 +7,7 @@ import pytest
 
 sys.path.insert(0, "src")
 
-from jaime.incident import Incident
+from jaime.incident import Incident, Suggestion
 
 
 class TestIncidentOpen:
@@ -100,3 +100,40 @@ class TestIncidentSerialisation:
         inc = Incident.from_dict(d)
         assert inc.id == d["id"]
         assert inc.closed_at is None
+
+
+class TestSuggestion:
+    def test_from_llm_creates_suggestion(self):
+        s = Suggestion.from_llm("The issue is X.", ["systemctl status", "journalctl -n 50"])
+        assert s.description == "The issue is X."
+        assert "systemctl status" in s.commands
+        assert "journalctl -n 50" in s.commands
+        assert "+00:00" in s.generated_at
+
+    def test_commands_are_immutable_tuple(self):
+        s = Suggestion.from_llm("desc", ["cmd1"])
+        assert isinstance(s.commands, tuple)
+
+    def test_to_dict_roundtrip(self):
+        s = Suggestion.from_llm("desc", ["cmd1", "cmd2"])
+        restored = Suggestion.from_dict(s.to_dict())
+        assert restored.description == s.description
+        assert restored.commands == s.commands
+        assert restored.generated_at == s.generated_at
+
+    def test_attach_suggestion_to_incident(self):
+        inc = Incident.open()
+        s = Suggestion.from_llm("diagnosis", ["df -h"])
+        updated = inc.attach_suggestion(s)
+        assert updated.suggestion is not None
+        assert updated.suggestion.description == "diagnosis"
+        assert inc.suggestion is None  # original unchanged
+
+    def test_incident_with_suggestion_roundtrip(self):
+        inc = Incident.open()
+        s = Suggestion.from_llm("diagnosis", ["df -h"])
+        updated = inc.attach_suggestion(s)
+        restored = Incident.from_dict(updated.to_dict())
+        assert restored.suggestion is not None
+        assert restored.suggestion.description == "diagnosis"
+        assert "df -h" in restored.suggestion.commands

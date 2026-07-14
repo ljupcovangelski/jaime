@@ -92,6 +92,12 @@ class StatusTracker:
             self._state[unit]["incident"] = closed_incident_dict
             self._save()
 
+    def update_incident(self, unit: str, incident_dict: dict) -> None:
+        """Update the stored incident dict (e.g. to attach a suggestion)."""
+        if unit in self._state:
+            self._state[unit]["incident"] = incident_dict
+            self._save()
+
     def has_open_incident(self, unit: str) -> bool:
         """Return True if there is an open (not yet closed) incident for a unit."""
         incident = self._state.get(unit, {}).get("incident")
