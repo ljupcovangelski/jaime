@@ -142,6 +142,11 @@ Only logic for `observe` mode is added at this phase.
 - [x] [test] Unit test `write_event` audit logging
 - [ ] [test] Add fake provider for AI tests
 
+### 1.11. Optimize data gathering and LLM context
+
+- [x] [python] Reduce charm config in report to only option name and default value
+- [x] [python] Filter unit logs to error/warning lines with context window around last match
+
 ## 2. Phase 2 — Assisted Remediation
 
 Integrate AI providers to analyze incidents, suggest remediation actions, and optionally execute approved fixes while maintaining a complete audit trail.

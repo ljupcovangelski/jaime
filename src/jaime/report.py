@@ -8,6 +8,7 @@ in suggest/act mode. It does not contain LLM output.
 import datetime
 import logging
 import os
+import yaml
 
 logger = logging.getLogger(__name__)
 
@@ -192,14 +193,23 @@ def _append_section_env(lines: list[str], plan_results: dict) -> None:
 def _append_section_charm_config(lines: list[str], context: dict) -> None:
     charm_config = context.get("charm_config", {})
     config_yaml = charm_config.get("config_yaml", "")
-    actions_yaml = charm_config.get("actions_yaml", "")
-    if not config_yaml and not actions_yaml:
+    if not config_yaml:
         return
+
+    try:
+        parsed = yaml.safe_load(config_yaml)
+        options = (parsed or {}).get("options", {})
+    except Exception:
+        options = {}
+
+    if not options:
+        return
+
     _append(lines, ["## Charm config"])
-    if config_yaml:
-        _append(lines, ["### config.yaml", "```yaml", config_yaml.rstrip(), "```"])
-    # if actions_yaml:
-    #    _append(lines, ["### actions.yaml", "```yaml", actions_yaml.rstrip(), "```"])
+
+    for key, opt in sorted(options.items()):
+        default = opt.get("default", "")
+        _append(lines, [f"- `{key}`: `{default}`"])
 
 
 def _append_section_disk(lines: list[str], context: dict) -> None:
@@ -223,8 +233,8 @@ def _append_section_memory(lines: list[str], context: dict) -> None:
 def _append_section_logs(lines: list[str], context: dict) -> None:
     unit_logs = context.get("unit_logs", [])
     _append(lines, ["## Recent unit logs"])
-    _append(lines, ["_Logs are in chronological order. Read from bottom to top — the most recent and relevant entries are at the end._"])
-    _append(lines, ["Use this error message to guide your analysis. Those errors need to be understood to provide a proper diagnostic"])
+    _append(lines, ["_Showing only lines matching `error` or `warning` (case-insensitive), with a context window around the last match._"])
+    _append(lines, ["_Logs are in chronological order._"])
     if unit_logs:
         _append(lines, ["```", *unit_logs, "```"])
     else:

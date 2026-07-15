@@ -8,6 +8,7 @@ import datetime
 import json
 import logging
 import os
+import re
 import sqlite3
 import subprocess
 
@@ -139,6 +140,7 @@ def collect_unit_logs(
     max_lines: int = _DEFAULT_MAX_LINES,
     from_time: datetime.datetime | None = None,
     buffer_minutes: int = 5,
+    context_window: int = 10,
 ) -> list[str]:
     """Read recent lines from the principal unit's Juju log file.
 
@@ -149,6 +151,12 @@ def collect_unit_logs(
 
     When ``from_time`` is None the window falls back to
     ``now - log_window_minutes`` (the original behaviour).
+
+    Lines are filtered to include only those matching ``(error|warning)``
+    (case-insensitive).  All matching lines are included, plus a context
+    window of ``context_window`` lines before and after the **last**
+    chronological match.  If no matches are found, all time-bounded lines
+    are returned as a fallback.
     """
     tag = "unit-" + unit_name.replace("/", "-")
     log_path = os.path.join(_JUJU_LOG_DIR, f"{tag}.log")
@@ -184,8 +192,25 @@ def collect_unit_logs(
             if recent:
                 recent.append(line.rstrip())
 
-    filtered = [l for l in recent if " INFO " not in l and " DEBUG " not in l]
-    return _tail_lines("\n".join(filtered), max_lines)
+    # Find indices of lines where the log level is ERROR or WARNING
+    matched_indices = [
+        i for i, line in enumerate(recent)
+        if re.search(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} (ERROR|WARNING)\s", line)
+    ]
+
+    if not matched_indices:
+        return _tail_lines("\n".join(recent), max_lines)
+
+    # Build set of indices to include: all matched lines + context around last
+    include_indices = set(matched_indices)
+    last_idx = matched_indices[-1]
+    window_start = max(0, last_idx - context_window)
+    window_end = min(len(recent) - 1, last_idx + context_window)
+    for j in range(window_start, window_end + 1):
+        include_indices.add(j)
+
+    result = [recent[i] for i in sorted(include_indices)]
+    return result[-max_lines:] if len(result) > max_lines else result
 
 
 def collect_systemd_failed() -> list[str]:

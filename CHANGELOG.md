@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.0.6] - 2026-07-15
+
+### Changes
+
+- Reduce charm config in report to only option name and default value (YAML parse + extract, drop full raw dump)
+- Filter unit logs to error/warning lines with context window (±10 rows) around the last chronological match
+- Remove crude `" INFO "/" DEBUG "` substring filter in favour of context-window approach
+
 ## [0.0.5] - 2026-07-15
 
 ### Features
