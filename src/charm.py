@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import datetime
+import traceback
 
 from ops.charm import CharmBase
 from ops.main import main
@@ -34,6 +35,7 @@ class JaimeCharm(CharmBase):
         super().__init__(*args)
         self._status_tracker = StatusTracker()
 
+        self.framework.observe(self.on.config_changed, self._on_config_changed)
         self.framework.observe(self.on.update_status, self._on_update_status)
         self.framework.observe(self.on.principal_relation_changed, self._on_principal_changed)
         self.framework.observe(self.on.principal_relation_joined, self._on_principal_joined)
@@ -45,6 +47,27 @@ class JaimeCharm(CharmBase):
         self.framework.observe(self.on.get_suggestion_action, self._on_action_get_suggestion)
         self.framework.observe(self.on.show_status_action, self._on_action_show_status)
         self.framework.observe(self.on.reset_action, self._on_action_reset)
+
+    def _on_config_changed(self, event):
+        """Validate AI provider connectivity on config change."""
+        mode = self.model.config.get("mode", "observe")
+        if mode not in ("suggest", "act"):
+            return
+
+        provider = self._get_ai_provider()
+        if provider is None:
+            self.unit.status = BlockedStatus(
+                f"mode={mode} but no AI provider configured"
+            )
+            return
+
+        err = provider.check()
+        if err:
+            logger.error("AI provider connectivity check failed: %s", err)
+            self.unit.status = BlockedStatus(f"AI provider error: {err[:20]}")
+            return
+
+        self.unit.status = ActiveStatus("Ready")
 
     def _on_update_status(self, event):
         try:
@@ -398,8 +421,9 @@ class JaimeCharm(CharmBase):
             return suggestion
 
         except Exception as e:
-            logger.error("AI provider call failed in mode '%s': %s", mode, e)
-            self.unit.status = BlockedStatus(f"AI provider error: {str(e)[:60]}")
+            logger.error("AI provider call failed in mode '%s': %s", mode,
+                         traceback.format_exc())
+            self.unit.status = BlockedStatus(f"AI provider error: {str(e)[:20]}")
             return None
 
     def _store_suggestion(self, unit_name: str, incident_dict: dict,

@@ -2,6 +2,7 @@
 
 import json
 import logging
+import traceback
 import urllib.request
 import urllib.error
 
@@ -16,6 +17,22 @@ class GeminiProvider(AIProvider):
     def __init__(self, api_token: str, model: str = "gemini-2.0-flash"):
         self._api_token = api_token
         self._model = model
+
+    def check(self) -> str | None:
+        """Lightweight connectivity check via model list endpoint."""
+        url = f"{GEMINI_API_BASE}?key={self._api_token}"
+        req = urllib.request.Request(url, method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                resp.read()
+            return None
+        except urllib.error.HTTPError as e:
+            body = e.read().decode(errors="replace")
+            logger.warning("Gemini check failed:\n%s", traceback.format_exc())
+            return f"Gemini API HTTP {e.code}: {body}"
+        except Exception as e:
+            logger.warning("Gemini check failed:\n%s", traceback.format_exc())
+            return f"Gemini connection error: {e}"
 
     def generate(self, prompt: str) -> str:
         url = f"{GEMINI_API_BASE}/{self._model}:generateContent?key={self._api_token}"

@@ -2,6 +2,7 @@
 
 import json
 import logging
+import traceback
 import urllib.request
 import urllib.error
 
@@ -16,6 +17,26 @@ class OpenRouterProvider(AIProvider):
     def __init__(self, api_token: str, model: str = "anthropic/claude-sonnet-4"):
         self._api_token = api_token
         self._model = model
+
+    def check(self) -> str | None:
+        """Lightweight connectivity check via auth key endpoint."""
+        url = f"{OPENROUTER_API_BASE}/auth/key"
+        req = urllib.request.Request(
+            url,
+            headers={"Authorization": f"Bearer {self._api_token}"},
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                resp.read()
+            return None
+        except urllib.error.HTTPError as e:
+            body = e.read().decode(errors="replace")
+            logger.warning("OpenRouter check failed:\n%s", traceback.format_exc())
+            return f"OpenRouter API HTTP {e.code}: {body[:200]}"
+        except Exception as e:
+            logger.warning("OpenRouter check failed:\n%s", traceback.format_exc())
+            return f"OpenRouter connection error: {e}"
 
     def generate(self, prompt: str) -> str:
         url = f"{OPENROUTER_API_BASE}/chat/completions"
