@@ -528,13 +528,9 @@ class JaimeCharm(CharmBase):
             context=context,
             report_dir=report_dir,
         )
-        with open(report_path) as f:
-            content = f.read()
-
         event.set_results({
             "incident-id": incident_id,
             "report-path": report_path,
-            "report": content,
         })
 
     def _on_action_get_suggestion(self, event):
