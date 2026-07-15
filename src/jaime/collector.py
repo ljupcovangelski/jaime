@@ -184,7 +184,7 @@ def collect_unit_logs(
             if recent:
                 recent.append(line.rstrip())
 
-    filtered = [l for l in recent if " INFO " not in l]
+    filtered = [l for l in recent if " INFO " not in l and " DEBUG " not in l]
     return _tail_lines("\n".join(filtered), max_lines)
 
 
