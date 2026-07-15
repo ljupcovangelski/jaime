@@ -35,4 +35,13 @@ deploy: pack
 		--config provider="${JAIME_PROVIDER}" \
 		--config model="${JAIME_MODEL}" \
 		--config api-token="${JAIME_API_TOKEN}" \
-		--config watch-statuses="error,blocked"
+		--config watch-statuses="error,blocked" \
+		--config failure-timeout-minutes=1
+	sleep 1
+	juju relate jaime ${PRINCIPLE_CHARM} 
+
+remove: 
+	@echo "🧹 Removing the jaime charm from the local Juju model..."
+	juju remove-relation jaime ${PRINCIPLE_CHARM}
+	sleep 2
+	juju remove-application jaime --no-prompt

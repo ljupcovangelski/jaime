@@ -57,6 +57,7 @@ def generate_report(
     _append_section_systemd(lines, plan_results, context)
     _append_section_network(lines, plan_results)
     _append_section_env(lines, plan_results)
+    _append_section_health_commands(lines, plan_results)
 
     # Background sections
     _append_section_charm_config(lines, context)
@@ -188,6 +189,25 @@ def _append_section_env(lines: list[str], plan_results: dict) -> None:
             _append(lines, [f"- `{name}` = `{value}` ✓"])
         else:
             _append(lines, [f"- `{name}` — unset ✗"])
+
+
+def _append_section_health_commands(lines: list[str], plan_results: dict) -> None:
+    section = plan_results.get("health_commands")
+    if not section or section["type"] != "plan":
+        return
+
+    _append(lines, ["## Health commands"])
+    for item in section.get("items", []):
+        command = item.get("command", "")
+        returncode = item.get("returncode", 0)
+        stdout = item.get("stdout", "")
+        stderr = item.get("stderr", "")
+        icon = "✓" if returncode == 0 else "✗"
+        _append(lines, [f"- `$ {command}` → exit {returncode} {icon}"])
+        if stdout:
+            _append(lines, ["  ```", *stdout.splitlines(), "  ```"])
+        if stderr:
+            _append(lines, ["  ```", *stderr.splitlines(), "  ```"])
 
 
 def _append_section_charm_config(lines: list[str], context: dict) -> None:

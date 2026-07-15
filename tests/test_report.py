@@ -140,6 +140,18 @@ _PLAN_RESULTS_ENV = {
     },
 }
 
+_PLAN_RESULTS_HEALTH_COMMANDS = {
+    "plan_results": {
+        "health_commands": {
+            "type": "plan",
+            "items": [
+                {"command": "systemctl is-active postgresql", "timeout_seconds": 5, "returncode": 0, "stdout": "active", "stderr": ""},
+                {"command": "pgrep -f postgres", "timeout_seconds": 5, "returncode": 1, "stdout": "", "stderr": "no process found"},
+            ],
+        },
+    },
+}
+
 _BROAD_PROCESSES = {
     "plan_results": {
         "processes": {
@@ -225,3 +237,50 @@ class TestReportPlanResults:
         assert "Log files" not in content
         assert "Network ports" not in content
         assert "Environment variables" not in content
+        assert "Health commands" not in content
+
+    def test_health_commands_section_success(self, tmp_path):
+        ctx = {**_FULL_CONTEXT, **_PLAN_RESULTS_HEALTH_COMMANDS}
+        path = generate_report(INCIDENT_ID, "postgresql/0", "blocked", FIRST_SEEN, ctx, str(tmp_path))
+        content = open(path).read()
+        assert "Health commands" in content
+        assert "systemctl is-active postgresql" in content
+        assert "exit 0" in content
+        assert "✓" in content
+        assert "active" in content
+
+    def test_health_commands_section_failure(self, tmp_path):
+        ctx = {**_FULL_CONTEXT, **_PLAN_RESULTS_HEALTH_COMMANDS}
+        path = generate_report(INCIDENT_ID, "postgresql/0", "blocked", FIRST_SEEN, ctx, str(tmp_path))
+        content = open(path).read()
+        assert "exit 1" in content
+        assert "✗" in content
+        assert "no process found" in content
+
+    def test_health_commands_not_shown_when_not_in_plan(self, tmp_path):
+        ctx = {**_FULL_CONTEXT, "plan_results": {}}
+        path = generate_report(INCIDENT_ID, "postgresql/0", "blocked", FIRST_SEEN, ctx, str(tmp_path))
+        content = open(path).read()
+        assert "Health commands" not in content
+
+    def test_charm_config_shows_name_and_default_only(self, tmp_path):
+        import yaml
+        config_yaml = yaml.dump({
+            "options": {
+                "port": {"type": "int", "default": 5432, "description": "Listen port"},
+                "debug": {"type": "boolean", "default": False, "description": "Enable debug"},
+            },
+        })
+        ctx = {
+            **_EMPTY_CONTEXT,
+            "charm_config": {"config_yaml": config_yaml, "actions_yaml": ""},
+        }
+        path = generate_report(INCIDENT_ID, "postgresql/0", "blocked", FIRST_SEEN, ctx, str(tmp_path))
+        content = open(path).read()
+        assert "`port`" in content
+        assert "`5432`" in content
+        assert "`debug`" in content
+        assert "`False`" in content
+        # Raw YAML content should NOT appear
+        assert "Listen port" not in content
+        assert "description" not in content

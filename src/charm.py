@@ -16,6 +16,7 @@ from jaime.diagnostics import (
     validate_diagnostics,
     build_prompt,
     write_diagnostics_file,
+    read_diagnostics_file,
     make_empty_plan,
 )
 from jaime.principal import StatusTracker
@@ -246,9 +247,11 @@ class JaimeCharm(CharmBase):
                 log_window = self.model.config.get("log-window-minutes", 30)
                 max_lines = self.model.config.get("max-context-lines", 500)
                 from_dt = datetime.datetime.fromisoformat(since_iso)
+                diagnostics_plan = read_diagnostics_file(self._diagnostics_path)
                 context = collect_context(
                     unit_name, log_window, max_lines,
                     from_time=from_dt,
+                    diagnostics_plan=diagnostics_plan,
                 )
                 write_event({
                     "event": "context-collected",
@@ -521,9 +524,11 @@ class JaimeCharm(CharmBase):
         log_window = self.model.config.get("log-window-minutes", 30)
         max_lines = self.model.config.get("max-context-lines", 500)
         report_dir = self.model.config.get("report-dir", "")
+        diagnostics_plan = read_diagnostics_file(self._diagnostics_path)
 
         context = collect_context(
             unit_name, log_window, max_lines,
+            diagnostics_plan=diagnostics_plan,
         )
         report_path = generate_report(
             incident_id=incident_id,

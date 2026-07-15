@@ -333,6 +333,43 @@ def _collect_env_variables(plan_vars: list[str]) -> list[dict]:
     return results
 
 
+def _collect_health_commands(plan_health_commands: list[dict]) -> list[dict]:
+    results = []
+    for cmd_def in plan_health_commands:
+        command = cmd_def.get("command", "")
+        timeout = cmd_def.get("timeout_seconds", 30)
+        argv = command.split()
+        try:
+            result = subprocess.run(
+                argv, capture_output=True, text=True, timeout=timeout,
+            )
+            results.append({
+                "command": command,
+                "timeout_seconds": timeout,
+                "returncode": result.returncode,
+                "stdout": result.stdout.strip(),
+                "stderr": result.stderr.strip(),
+            })
+        except subprocess.TimeoutExpired:
+            results.append({
+                "command": command,
+                "timeout_seconds": timeout,
+                "returncode": -1,
+                "stdout": "",
+                "stderr": "timed out after {}s".format(timeout),
+            })
+        except Exception as e:
+            logger.debug("health command %s failed: %s", command, e)
+            results.append({
+                "command": command,
+                "timeout_seconds": timeout,
+                "returncode": -1,
+                "stdout": "",
+                "stderr": str(e),
+            })
+    return results
+
+
 # ---------------------------------------------------------------------------
 # Broad fallback collection helpers (used when no plan or empty plan)
 # ---------------------------------------------------------------------------
@@ -476,6 +513,13 @@ def collect_context(
             plan_results["env_variables"] = {
                 "type": "plan",
                 "items": _collect_env_variables(env_variables),
+            }
+
+        health_commands = mp.get("health_commands", [])
+        if health_commands:
+            plan_results["health_commands"] = {
+                "type": "plan",
+                "items": _collect_health_commands(health_commands),
             }
 
     context["plan_results"] = plan_results

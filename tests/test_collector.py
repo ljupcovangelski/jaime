@@ -155,6 +155,84 @@ class TestCollectUnitLogs:
         assert any("old line" in l for l in result)
         assert any("recent line" in l for l in result)
 
+    def test_filters_to_error_warning_level(self, tmp_path):
+        """Only lines with ERROR or WARNING level are matched when context_window=0."""
+        log_file = tmp_path / "unit-postgresql-0.log"
+        now = datetime.datetime.now(datetime.timezone.utc)
+        ts = now.strftime("%Y-%m-%d %H:%M:%S")
+        log_file.write_text(
+            f"{ts} INFO some info line\n"
+            f"{ts} DEBUG some debug line\n"
+            f"{ts} WARNING some warning line\n"
+            f"{ts} ERROR some error line\n"
+            f"{ts} INFO awaiting error resolution\n"
+        )
+        import jaime.collector as jcollector
+        with mock.patch.object(jcollector, "_JUJU_LOG_DIR", str(tmp_path)):
+            result = collect_unit_logs("postgresql/0", log_window_minutes=60, context_window=0)
+        # ERROR and WARNING lines should be included
+        assert any("some warning line" in l for l in result)
+        assert any("some error line" in l for l in result)
+        # INFO and DEBUG lines should NOT be included (context_window=0)
+        assert not any("some info line" in l for l in result)
+        assert not any("some debug line" in l for l in result)
+        # INFO lines containing "error" in message body but INFO level should NOT be matched
+        assert not any("awaiting error resolution" in l for l in result)
+
+    def test_no_error_warning_matches_falls_back(self, tmp_path):
+        """When no lines match ERROR/WARNING level, all recent lines are returned."""
+        log_file = tmp_path / "unit-postgresql-0.log"
+        now = datetime.datetime.now(datetime.timezone.utc)
+        ts = now.strftime("%Y-%m-%d %H:%M:%S")
+        log_file.write_text(
+            f"{ts} INFO line one\n"
+            f"{ts} INFO line two\n"
+        )
+        import jaime.collector as jcollector
+        with mock.patch.object(jcollector, "_JUJU_LOG_DIR", str(tmp_path)):
+            result = collect_unit_logs("postgresql/0", log_window_minutes=60)
+        assert any("line one" in l for l in result)
+        assert any("line two" in l for l in result)
+
+    def test_context_window_around_last_match(self, tmp_path):
+        """Lines within context_window of the last match are included."""
+        log_file = tmp_path / "unit-postgresql-0.log"
+        now = datetime.datetime.now(datetime.timezone.utc)
+        lines = []
+        for i in range(20):
+            ts = (now - datetime.timedelta(minutes=20 - i)).strftime("%Y-%m-%d %H:%M:%S")
+            level = "ERROR" if i == 15 else "INFO"
+            lines.append(f"{ts} {level} line {i}")
+        log_file.write_text("\n".join(lines) + "\n")
+        import jaime.collector as jcollector
+        with mock.patch.object(jcollector, "_JUJU_LOG_DIR", str(tmp_path)):
+            result = collect_unit_logs("postgresql/0", log_window_minutes=60, context_window=3)
+        # The ERROR at index 15 should be included
+        assert any("ERROR line 15" in l for l in result)
+        # Context window around index 15: indices 12-18, capped to 0-19
+        # So lines at indices 12, 13, 14, 16, 17, 18 should also be included
+        assert any("line 12" in l for l in result)
+        assert any("line 14" in l for l in result)
+        assert any("line 16" in l for l in result)
+        # Line at index 11 (outside context_window) should not be included
+        assert not any("line 11" in l for l in result)
+
+    def test_context_window_does_not_exceed_bounds(self, tmp_path):
+        """Context window at the start/end of recent lines doesn't go out of bounds."""
+        log_file = tmp_path / "unit-postgresql-0.log"
+        now = datetime.datetime.now(datetime.timezone.utc)
+        ts0 = (now - datetime.timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
+        ts1 = now.strftime("%Y-%m-%d %H:%M:%S")
+        log_file.write_text(
+            f"{ts0} WARNING first line\n"
+            f"{ts1} ERROR last line\n"
+        )
+        import jaime.collector as jcollector
+        with mock.patch.object(jcollector, "_JUJU_LOG_DIR", str(tmp_path)):
+            result = collect_unit_logs("postgresql/0", log_window_minutes=60, context_window=5)
+        # Both lines should be included (context window at the edges)
+        assert len(result) == 2
+
     def test_without_from_time_uses_rolling_window(self, tmp_path):
         """Without from_time, original rolling window behaviour is preserved."""
         log_file = tmp_path / "unit-postgresql-0.log"
@@ -363,6 +441,53 @@ class TestCollectNetworkPorts:
         assert result[0]["status"] == "not_listening"
 
 
+class TestCollectHealthCommands:
+    def test_command_succeeds(self):
+        mock_result = mock.MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "active\n"
+        mock_result.stderr = ""
+        with mock.patch("jaime.collector.subprocess.run", return_value=mock_result):
+            result = jcollector._collect_health_commands([
+                {"command": "systemctl is-active postgresql", "timeout_seconds": 5},
+            ])
+        assert len(result) == 1
+        assert result[0]["returncode"] == 0
+        assert result[0]["stdout"] == "active"
+        assert result[0]["stderr"] == ""
+
+    def test_command_fails(self):
+        mock_result = mock.MagicMock()
+        mock_result.returncode = 3
+        mock_result.stdout = ""
+        mock_result.stderr = "Unit not found"
+        with mock.patch("jaime.collector.subprocess.run", return_value=mock_result):
+            result = jcollector._collect_health_commands([
+                {"command": "systemctl is-active nonexistent", "timeout_seconds": 5},
+            ])
+        assert result[0]["returncode"] == 3
+        assert result[0]["stderr"] == "Unit not found"
+
+    def test_command_times_out(self):
+        with mock.patch("jaime.collector.subprocess.run", side_effect=__import__("subprocess").TimeoutExpired("cmd", 5)):
+            result = jcollector._collect_health_commands([
+                {"command": "sleep 100", "timeout_seconds": 5},
+            ])
+        assert result[0]["returncode"] == -1
+        assert "timed out" in result[0]["stderr"]
+
+    def test_command_raises_exception(self):
+        with mock.patch("jaime.collector.subprocess.run", side_effect=FileNotFoundError("no such binary")):
+            result = jcollector._collect_health_commands([
+                {"command": "nonexistent-binary", "timeout_seconds": 5},
+            ])
+        assert result[0]["returncode"] == -1
+        assert "no such binary" in result[0]["stderr"]
+
+    def test_empty_plan_returns_empty(self):
+        assert jcollector._collect_health_commands([]) == []
+
+
 class TestCollectEnvVariables:
     def test_var_set(self):
         result = jcollector._collect_env_variables(["PATH"])
@@ -385,6 +510,7 @@ class TestCollectContextWithPlan:
                 "systemd_units": ["postgresql.service"],
                 "env_variables": ["PGDATA"],
                 "network": {"ports": [{"port": 5432, "protocol": "tcp"}]},
+                "health_commands": [{"command": "systemctl is-active postgresql", "timeout_seconds": 5}],
             },
         }
         mocks = {
@@ -397,6 +523,7 @@ class TestCollectContextWithPlan:
             "_collect_systemd_units": mock.MagicMock(return_value=[{"unit": "postgresql.service", "status": "active"}]),
             "_collect_network_ports": mock.MagicMock(return_value=[{"port": 5432, "protocol": "tcp", "status": "listening"}]),
             "_collect_env_variables": mock.MagicMock(return_value=[{"name": "PGDATA", "value": "/var/lib/pg", "status": "set"}]),
+            "_collect_health_commands": mock.MagicMock(return_value=[{"command": "systemctl is-active postgresql", "returncode": 0, "stdout": "active", "stderr": ""}]),
         }
         with mock.patch.multiple("jaime.collector", **mocks):
             ctx = collect_context("postgresql/0", diagnostics_plan=plan)
@@ -406,6 +533,8 @@ class TestCollectContextWithPlan:
         assert pr["systemd_units"]["type"] == "plan"
         assert pr["network_ports"]["type"] == "plan"
         assert pr["env_variables"]["type"] == "plan"
+        assert pr["health_commands"]["type"] == "plan"
+        assert pr["health_commands"]["items"][0]["returncode"] == 0
 
     def test_plan_with_empty_processes_falls_back_to_broad(self):
         """When a plan section is empty, broad fallback is used instead."""

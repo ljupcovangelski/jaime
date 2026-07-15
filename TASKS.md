@@ -146,6 +146,8 @@ Only logic for `observe` mode is added at this phase.
 
 - [x] [python] Reduce charm config in report to only option name and default value
 - [x] [python] Filter unit logs to error/warning lines with context window around last match
+- [x] [python] Parse diagnostics.json and pass to collect_context for plan-driven collection in reports
+- [x] [python] Collect and append health commands output to the incident report
 
 ## 2. Phase 2 — Assisted Remediation
 
