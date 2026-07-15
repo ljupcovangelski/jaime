@@ -228,7 +228,6 @@ failure-timeout-minutes: 5
 cooldown-minutes: 30
 log-window-minutes: 30
 max-context-lines: 500
-ai-report-enabled: true
 ```
 
 ## Juju actions

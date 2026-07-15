@@ -49,10 +49,6 @@ options:
     type: string
     description: "Path to the structured JSONL audit log."
     default: /var/log/jaime/events.jsonl
-  ai-report-enabled:
-    type: boolean
-    description: "Whether AI-assisted report generation is enabled."
-    default: false
   diagnostics:
     type: string
     description: >

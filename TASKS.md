@@ -35,7 +35,6 @@ Only logic for `observe` mode is added at this phase.
 - [x] [charm] Add `max-context-lines`, default `500`
 - [x] [charm] Add `provider`, default `none` or `gemini`
 - [x] [charm] Add `model`
-- [x] [charm] Add `ai-report-enabled`, default `false` initially
 - [x] [charm] Add token/secret config only after non-AI observe path works
 
 ### 1.3. Diagnostics plan generation
