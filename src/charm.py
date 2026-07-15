@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Jaime charm — diagnostics plan generation on relation-joined."""
 
+import hashlib
 import json
 import logging
 import os
@@ -391,7 +392,8 @@ class JaimeCharm(CharmBase):
             pass
         return None
 
-    def _run_mode_logic(self, report_content: str) -> "Suggestion | None":
+    def _run_mode_logic(self, report_content: str,
+                        additional_context: str = "") -> "Suggestion | None":
         """Run suggest or act logic based on the configured mode.
 
         Returns a Suggestion, or None in observe mode / on error.
@@ -409,10 +411,10 @@ class JaimeCharm(CharmBase):
 
         try:
             if mode == "suggest":
-                return run_suggest(provider, report_content)
+                return run_suggest(provider, report_content, additional_context)
 
             # act mode
-            suggestion, act_results = run_act(provider, report_content)
+            suggestion, act_results = run_act(provider, report_content, additional_context)
             for result in act_results:
                 write_event({
                     "event": "act-command-executed",
@@ -539,24 +541,30 @@ class JaimeCharm(CharmBase):
     def _on_action_get_suggestion(self, event):
         """Return the AI suggestion for the current open incident.
 
-        Generates a new suggestion on-demand in suggest/act mode when none
-        is stored yet.
+        If additional-context is provided and differs from the stored hash,
+        the suggestion is regenerated (calls the AI provider again).
+        Otherwise the stored suggestion is returned.
         """
         logger.info("get-suggestion action invoked")
+        additional_context = event.params.get("additional-context", "")
+        context_hash = hashlib.sha256(additional_context.encode()).hexdigest() if additional_context else ""
 
         for unit_name, entry in self._status_tracker._state.items():
             inc = entry.get("incident")
             if inc and inc.get("closed_at") is None:
                 suggestion = inc.get("suggestion")
                 if suggestion:
-                    event.set_results({
-                        "incident-id": inc["id"],
-                        "description": suggestion["description"],
-                        "commands": "\n".join(suggestion["commands"]),
-                        "command-count": len(suggestion["commands"]),
-                        "generated-at": suggestion["generated_at"],
-                    })
-                    return
+                    stored_hash = suggestion.get("context_hash", "")
+                    if not additional_context or context_hash == stored_hash:
+                        event.set_results({
+                            "incident-id": inc["id"],
+                            "description": suggestion["description"],
+                            "commands": "\n".join(suggestion["commands"]),
+                            "command-count": len(suggestion["commands"]),
+                            "generated-at": suggestion["generated_at"],
+                        })
+                        return
+                    # Hash differs: fall through to regenerate
 
                 mode = self.model.config.get("mode", "observe")
                 if mode == "observe":
@@ -572,7 +580,7 @@ class JaimeCharm(CharmBase):
                 with open(report_path) as f:
                     report_content = f.read()
 
-                suggestion = self._run_mode_logic(report_content)
+                suggestion = self._run_mode_logic(report_content, additional_context)
                 if suggestion is None:
                     event.fail("could not generate suggestion")
                     return

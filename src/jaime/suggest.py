@@ -8,6 +8,7 @@ act:     same as suggest, but also executes every command in the Suggestion.
          All executions are audited to the JSONL log.
 """
 
+import hashlib
 import logging
 import re
 import subprocess
@@ -35,16 +36,29 @@ juju config postgresql some-key=true
 
 Keep your response concise and focused on the incident.
 
-Incident report:
+{additional_context_section}Incident report:
 ---
 {report}
----
-"""
+---"""
 
 
-def build_suggest_prompt(report_content: str) -> str:
+def build_suggest_prompt(report_content: str,
+                         additional_context: str = "") -> str:
     """Build the prompt to send to the AI provider for suggest/act mode."""
-    return _SUGGEST_PROMPT_TEMPLATE.format(report=report_content)
+    extra = ""
+    if additional_context:
+        extra = (
+            "## Operator-supplied context (HIGH PRIORITY)\n\n"
+            "The operator has provided the following additional context. "
+            "Treat this information as authoritative for this investigation "
+            "and incorporate it into your diagnosis and remediation plan.\n\n"
+            f"{additional_context}\n\n"
+            "---\n"
+        )
+    return _SUGGEST_PROMPT_TEMPLATE.format(
+        report=report_content,
+        additional_context_section=extra,
+    )
 
 
 def parse_commands(llm_response: str) -> list[str]:
@@ -86,7 +100,8 @@ def execute_command(command: str, timeout: int = 30) -> dict:
         return {"command": command, "returncode": -1, "stdout": "", "stderr": str(e)}
 
 
-def run_suggest(provider, report_content: str) -> Suggestion:
+def run_suggest(provider, report_content: str,
+                additional_context: str = "") -> Suggestion:
     """Call the AI provider and return a Suggestion.
 
     Raises if the provider call fails, so the caller can surface the error.
@@ -94,17 +109,23 @@ def run_suggest(provider, report_content: str) -> Suggestion:
     """
     if provider is None:
         return None
-    prompt = build_suggest_prompt(report_content)
+    prompt = build_suggest_prompt(report_content, additional_context)
     llm_response = provider.generate(prompt)
     logger.info("AI provider returned suggestion successfully")
     logger.debug("AI provider suggestion response:\n%s", llm_response)
     commands = parse_commands(llm_response)
-    return Suggestion.from_llm(description=llm_response, commands=commands)
+    context_hash = hashlib.sha256(additional_context.encode()).hexdigest() if additional_context else ""
+    return Suggestion.from_llm(
+        description=llm_response,
+        commands=commands,
+        context_hash=context_hash,
+    )
 
 
 def run_act(
     provider,
     report_content: str,
+    additional_context: str = "",
     dry_run: bool = False,
 ) -> tuple[Suggestion | None, list[dict]]:
     """Call the AI provider, build a Suggestion, and execute its commands.
@@ -112,7 +133,7 @@ def run_act(
     Returns (suggestion, execution_results).
     If dry_run is True, commands are parsed but not executed.
     """
-    suggestion = run_suggest(provider, report_content)
+    suggestion = run_suggest(provider, report_content, additional_context)
     if suggestion is None:
         return None, []
 

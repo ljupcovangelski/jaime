@@ -10,22 +10,26 @@ class Suggestion:
     """An AI-generated suggestion attached to an incident.
 
     Attributes:
-        description: The LLM's analysis and diagnosis text.
-        commands:    Commands parsed from the LLM response.
-        generated_at: ISO 8601 timestamp (UTC) when the suggestion was created.
+        description:   The LLM's analysis and diagnosis text.
+        commands:      Commands parsed from the LLM response.
+        generated_at:  ISO 8601 timestamp (UTC) when the suggestion was created.
+        context_hash:  SHA-256 of the additional-context string, or empty if none.
     """
 
     description: str
     commands: tuple[str, ...]
     generated_at: str
+    context_hash: str = ""
 
     @classmethod
-    def from_llm(cls, description: str, commands: list[str]) -> "Suggestion":
+    def from_llm(cls, description: str, commands: list[str],
+                 context_hash: str = "") -> "Suggestion":
         """Create a Suggestion from LLM output."""
         return cls(
             description=description,
             commands=tuple(commands),
             generated_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            context_hash=context_hash,
         )
 
     def to_dict(self) -> dict:
@@ -33,6 +37,7 @@ class Suggestion:
             "description": self.description,
             "commands": list(self.commands),
             "generated_at": self.generated_at,
+            "context_hash": self.context_hash,
         }
 
     @classmethod
@@ -41,6 +46,7 @@ class Suggestion:
             description=d["description"],
             commands=tuple(d.get("commands", [])),
             generated_at=d["generated_at"],
+            context_hash=d.get("context_hash", ""),
         )
 
 
