@@ -346,6 +346,8 @@ class JaimeCharm(CharmBase):
         try:
             prompt = build_prompt(principal_name)
             response = provider.generate(prompt)
+            logger.info("Diagnostics plan generated successfully via %s", self.model.config.get("provider"))
+            logger.debug("Diagnostics plan AI response:\n%s", response)
 
             # Gemini may wrap the JSON in markdown fences despite being asked not to.
             # Strip ```json ... ``` or ``` ... ``` blocks if present.
@@ -361,7 +363,8 @@ class JaimeCharm(CharmBase):
             plan = json.loads(stripped)
             plan["generated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
         except Exception as e:
-            logger.error("monitoring plan generation failed: %s — falling back to empty plan", e)
+            logger.error("Diagnostics plan generation via %s failed: %s — falling back to empty plan",
+                         self.model.config.get("provider"), e)
             plan = make_empty_plan(principal_name)
             write_diagnostics_file(plan, self._diagnostics_path)
             self.unit.status = ActiveStatus("Ready")

@@ -100,7 +100,7 @@ Only logic for `observe` mode is added at this phase.
 - [x] [python] Write `context-collected` event with log line count
 - [x] [python] Write `report-generated` event with path and mode
 - [ ] [python] Write `still-unhealthy` event during timeout wait
-- [ ] [python] Write `incident-recovered` event on recovery
+- [x] [python] Write `incident-recovered` event on recovery
 - [x] [python] Include timestamp, incident ID, principal unit, status in all events
 
 ### 1.8. Reports
@@ -147,16 +147,15 @@ Only logic for `observe` mode is added at this phase.
 
 Integrate AI providers to analyze incidents, suggest remediation actions, and optionally execute approved fixes while maintaining a complete audit trail.
 
-- [ ] Add provider interface
-- [ ] Add Gemini provider
-- [ ] Add provider config validation
-- [ ] Add Juju secret/token handling
-- [ ] Add prompt builder
-- [ ] Add context sanitizer before AI call
-- [ ] Add AI response parser
-- [ ] Add AI-assisted Markdown report
-- [ ] Ensure provider failures fall back to non-AI report
-- [ ] Add tests with fake provider
+- [x] Add provider interface
+- [x] Add Gemini provider
+- [x] Add OpenRouter provider
+- [x] Add provider config validation
+- [x] Add Juju secret/token handling
+- [x] Add prompt builder
+- [x] Add AI response parser
+- [x] Add AI-assisted Markdown report
+- [x] Ensure provider failures fall back to non-AI report
 
 ## 3. Phase 3 – Environment Hygiene
 

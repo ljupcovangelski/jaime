@@ -224,3 +224,4 @@ pkg/
 # Workflow
 .coding_sessions
 .coding_sessoins/*
+.env

@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.0.5] - 2026-07-15
+
+### Features
+
+- Add OpenRouter as a second AI provider with configurable model selection
+- Add provider connectivity check (`check()`) for both Gemini and OpenRouter
+
+### Changes
+
+- Log AI provider call results: INFO-level success/failure per provider, DEBUG-level full response
+- Improve error messages in diagnostics generation to include the provider name
+
 ## [0.0.4] - 2026-07-14
 
 ### Features

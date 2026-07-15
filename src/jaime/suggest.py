@@ -96,6 +96,8 @@ def run_suggest(provider, report_content: str) -> Suggestion:
         return None
     prompt = build_suggest_prompt(report_content)
     llm_response = provider.generate(prompt)
+    logger.info("AI provider returned suggestion successfully")
+    logger.debug("AI provider suggestion response:\n%s", llm_response)
     commands = parse_commands(llm_response)
     return Suggestion.from_llm(description=llm_response, commands=commands)
 
