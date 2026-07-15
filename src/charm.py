@@ -3,6 +3,7 @@
 
 import json
 import logging
+import os
 import datetime
 
 from ops.charm import CharmBase
@@ -256,16 +257,7 @@ class JaimeCharm(CharmBase):
 
                 suggestion = self._run_mode_logic(report_content)
                 if suggestion is not None:
-                    updated = incident.attach_suggestion(suggestion)
-                    self._status_tracker.update_incident(unit_name, updated.to_dict())
-                    write_event({
-                        "event": "suggestion-generated",
-                        "unit": unit_name,
-                        "incident_id": incident.id,
-                        "commands": list(suggestion.commands),
-                        "mode": self.model.config.get("mode", "observe"),
-                        "timestamp": now.isoformat(),
-                    }, self.model.config.get("audit-log-path", ""))
+                    self._store_suggestion(unit_name, incident.to_dict(), suggestion)
                 # Only update to active if no provider error was set.
                 if not isinstance(self.unit.status, BlockedStatus):
                     self.unit.status = ActiveStatus(
@@ -410,6 +402,21 @@ class JaimeCharm(CharmBase):
             self.unit.status = BlockedStatus(f"AI provider error: {str(e)[:60]}")
             return None
 
+    def _store_suggestion(self, unit_name: str, incident_dict: dict,
+                          suggestion: "Suggestion") -> "Suggestion":
+        """Attach a suggestion to the incident and persist it."""
+        updated = Incident.from_dict(incident_dict).attach_suggestion(suggestion)
+        self._status_tracker.update_incident(unit_name, updated.to_dict())
+        write_event({
+            "event": "suggestion-generated",
+            "unit": unit_name,
+            "incident_id": incident_dict["id"],
+            "commands": list(suggestion.commands),
+            "mode": self.model.config.get("mode", "observe"),
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }, self.model.config.get("audit-log-path", ""))
+        return suggestion
+
     def _get_ai_provider(self):
         provider_name = self.model.config.get("provider", "none")
         if provider_name == "none":
@@ -507,22 +514,53 @@ class JaimeCharm(CharmBase):
         })
 
     def _on_action_get_suggestion(self, event):
-        """Return the AI suggestion for the current open incident."""
+        """Return the AI suggestion for the current open incident.
+
+        Generates a new suggestion on-demand in suggest/act mode when none
+        is stored yet.
+        """
         logger.info("get-suggestion action invoked")
 
-        for entry in self._status_tracker._state.values():
+        for unit_name, entry in self._status_tracker._state.items():
             inc = entry.get("incident")
             if inc and inc.get("closed_at") is None:
                 suggestion = inc.get("suggestion")
-                if not suggestion:
-                    event.fail("no suggestion available for the current incident")
+                if suggestion:
+                    event.set_results({
+                        "incident-id": inc["id"],
+                        "description": suggestion["description"],
+                        "commands": "\n".join(suggestion["commands"]),
+                        "command-count": len(suggestion["commands"]),
+                        "generated-at": suggestion["generated_at"],
+                    })
                     return
+
+                mode = self.model.config.get("mode", "observe")
+                if mode == "observe":
+                    event.fail("no suggestion available — mode is 'observe'")
+                    return
+
+                # Re-read the existing report instead of regenerating it.
+                report_dir = self.model.config.get("report-dir", "") or "/var/lib/jaime/reports"
+                report_path = os.path.join(report_dir, f'{inc["id"]}.md')
+                if not os.path.exists(report_path):
+                    event.fail(f"report file not found at {report_path}")
+                    return
+                with open(report_path) as f:
+                    report_content = f.read()
+
+                suggestion = self._run_mode_logic(report_content)
+                if suggestion is None:
+                    event.fail("could not generate suggestion")
+                    return
+
+                self._store_suggestion(unit_name, inc, suggestion)
                 event.set_results({
                     "incident-id": inc["id"],
-                    "description": suggestion["description"],
-                    "commands": "\n".join(suggestion["commands"]),
-                    "command-count": len(suggestion["commands"]),
-                    "generated-at": suggestion["generated_at"],
+                    "description": suggestion.description,
+                    "commands": "\n".join(suggestion.commands),
+                    "command-count": len(suggestion.commands),
+                    "generated-at": suggestion.generated_at,
                 })
                 return
 
