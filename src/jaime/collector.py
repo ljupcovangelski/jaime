@@ -134,6 +134,54 @@ def _tail_lines(text: str, max_lines: int) -> list[str]:
     return lines[-max_lines:] if len(lines) > max_lines else lines
 
 
+def _line_pattern(line: str) -> str:
+    """Strip variable tokens from a log line to get its structural pattern."""
+    s = re.sub(r'\d{4}-\d{2}-\d{2}T[\d:.+Z]+', 'TS', line)
+    s = re.sub(r'\[\d+\]', '[N]', s)
+    s = re.sub(r'\b0x[0-9a-fA-F]+\b', 'HEX', s)
+    s = re.sub(r'\b[0-9a-fA-F]{8,}\b', 'HEX', s)
+    s = re.sub(r'\b\d+\b', 'N', s)
+    # normalize each path segment (word after /) so /sys/module/foo/uevent
+    # and /sys/module/bar/uevent both become /P/P/P/P
+    s = re.sub(r'(?<=/)\w[\w.-]*(?=[/\'"\s]|$)', 'P', s)
+    # collapse variable identifier before ': LEVEL' (e.g. udevadm module names)
+    s = re.sub(r'\b\w+: (Failed|Warning|Error)', r'TOKEN: \1', s)
+    return s
+
+
+def _deduplicate_lines(lines: list[str], threshold: int = 3) -> list[str]:
+    """Collapse runs of structurally identical lines or repeating block patterns."""
+    result: list[str] = []
+    i = 0
+    n = len(lines)
+    max_block = 8
+
+    while i < n:
+        collapsed = False
+        for L in range(1, max_block + 1):
+            if i + L * threshold > n:
+                break
+            pattern_block = [_line_pattern(lines[i + k]) for k in range(L)]
+            j = i + L
+            while j + L <= n and [_line_pattern(lines[j + k]) for k in range(L)] == pattern_block:
+                j += L
+            count = (j - i) // L
+            if count >= threshold:
+                result.extend(lines[i:i + L])
+                omitted = count - 1
+                if omitted > 0:
+                    label = "lines" if L == 1 else "repetitions"
+                    result.append(f"    … {omitted} similar {label} omitted")
+                i = j
+                collapsed = True
+                break
+        if not collapsed:
+            result.append(lines[i])
+            i += 1
+
+    return result
+
+
 def collect_unit_logs(
     unit_name: str,
     log_window_minutes: int = _DEFAULT_LOG_WINDOW_MINUTES,
@@ -199,7 +247,7 @@ def collect_unit_logs(
     ]
 
     if not matched_indices:
-        return _tail_lines("\n".join(recent), max_lines)
+        return _deduplicate_lines(_tail_lines("\n".join(recent), max_lines))
 
     # Build set of indices to include: all matched lines + context around last
     include_indices = set(matched_indices)
@@ -210,7 +258,8 @@ def collect_unit_logs(
         include_indices.add(j)
 
     result = [recent[i] for i in sorted(include_indices)]
-    return result[-max_lines:] if len(result) > max_lines else result
+    result = result[-max_lines:] if len(result) > max_lines else result
+    return _deduplicate_lines(result)
 
 
 def collect_systemd_failed() -> list[str]:
@@ -242,7 +291,7 @@ def _collect_log_files(plan_log_files: list[dict], max_lines: int) -> list[dict]
         description = lf.get("description", "")
         try:
             with open(path) as f:
-                lines = _tail_lines(f.read(), max_lines)
+                lines = _deduplicate_lines(_tail_lines(f.read(), max_lines))
             results.append({
                 "path": path,
                 "priority": priority,
@@ -388,6 +437,37 @@ def _collect_broad_ports() -> list[str]:
 
 
 
+def collect_ss_connections(max_lines: int = 100) -> list[str]:
+    """Collect all listening and established TCP/UDP connections with process info."""
+    output = _run(["sudo", "ss", "-antlup"])
+    lines = [l.rstrip() for l in output.splitlines() if l.strip()]
+    return lines[-max_lines:] if len(lines) > max_lines else lines
+
+
+def collect_firewall_rules() -> dict:
+    """Collect IPv4 firewall rules from iptables, ufw, and nftables.
+
+    Returns a dict with keys ``iptables``, ``ufw``, ``nftables`` — each
+    is a list of output lines, or absent if the command failed or the
+    tool is not installed.
+    """
+    result = {}
+
+    iptables_out = _run(["iptables", "-L", "-n"])
+    if iptables_out:
+        result["iptables"] = [l.rstrip() for l in iptables_out.splitlines() if l.strip()]
+
+    ufw_out = _run(["ufw", "status", "verbose"])
+    if ufw_out:
+        result["ufw"] = [l.rstrip() for l in ufw_out.splitlines() if l.strip()]
+
+    nft_out = _run(["nft", "list", "ruleset", "ip"])
+    if nft_out:
+        result["nftables"] = [l.rstrip() for l in nft_out.splitlines() if l.strip()]
+
+    return result
+
+
 def collect_charm_config(unit_name: str) -> dict:
     """Read the principal charm's config.yaml and actions.yaml.
 
@@ -446,6 +526,8 @@ def collect_context(
         "charm_config": collect_charm_config(unit_name),
         "disk_usage": collect_disk_usage(),
         "memory_summary": collect_memory_summary(),
+        "ss_connections": collect_ss_connections(),
+        "firewall_rules": collect_firewall_rules(),
         "collected_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
 

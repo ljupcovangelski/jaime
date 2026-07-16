@@ -52,10 +52,12 @@ def generate_report(
 
     plan_results = context.get("plan_results", {})
 
+    _append_section_network(lines, plan_results)
+    _append_section_ss_connections(lines, context)
+    _append_section_firewall_rules(lines, context)
     _append_section_log_files(lines, plan_results)
     _append_section_processes(lines, plan_results)
     _append_section_systemd(lines, plan_results, context)
-    _append_section_network(lines, plan_results)
     _append_section_env(lines, plan_results)
     _append_section_health_commands(lines, plan_results)
 
@@ -280,3 +282,28 @@ def _append_section_tracing(lines: list[str], context: dict) -> None:
         rows.append(f"| `{ts}` | `{name}` | `{kind}` | {error_col} |")
 
     _append(lines, rows)
+
+
+def _append_section_ss_connections(lines: list[str], context: dict) -> None:
+    ss = context.get("ss_connections", [])
+    if not ss:
+        return
+    _append(lines, ["## Network connections (listening + active)", "```", *ss, "```"])
+
+
+def _append_section_firewall_rules(lines: list[str], context: dict) -> None:
+    fw = context.get("firewall_rules", {})
+    if not fw:
+        return
+
+    iptables = fw.get("iptables", [])
+    if iptables:
+        _append(lines, ["## Firewall rules (iptables — IPv4)", "```", *iptables, "```"])
+
+    ufw = fw.get("ufw", [])
+    if ufw:
+        _append(lines, ["## Firewall rules (ufw)", "```", *ufw, "```"])
+
+    nftables = fw.get("nftables", [])
+    if nftables:
+        _append(lines, ["## Firewall rules (nftables — IPv4)", "```", *nftables, "```"])
