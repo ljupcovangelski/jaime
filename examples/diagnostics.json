@@ -1,6 +1,6 @@
 {
   "principal_name": "postgresql",
-  "generated_at": "2026-07-14T10:05:00+00:00",
+  "generated_at": "2026-07-14T10:05:00.123456+00:00",
   "monitoring_plan": {
     "log_files": [
       {
@@ -46,6 +46,16 @@
         { "port": 5432, "protocol": "tcp" },
         { "port": 6432, "protocol": "tcp" }
       ]
-    }
+    },
+    "health_commands": [
+      {
+        "command": "systemctl is-active postgresql@16-main.service",
+        "timeout_seconds": 10
+      },
+      {
+        "command": "pg_isready -h localhost -p 5432",
+        "timeout_seconds": 10
+      }
+    ]
   }
 }

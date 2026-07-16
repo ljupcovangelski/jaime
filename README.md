@@ -10,7 +10,7 @@ The phase-1 MVP focuses on **Observe mode**:
 - wait for a configurable timeout before creating an incident report
 - collect diagnostics by iterating the monitoring plan, or fall back to broad commands (`ps aux`, `ss -tlnp`, etc.)
 - write structured JSONL audit logs
-- optionally call an AI provider (Gemini) for diagnosis suggestions
+- optionally call an AI provider (Gemini or OpenRouter) for diagnosis suggestions
 - do **not** perform remediation in phase-1 unless explicitly enabled
 
 ## Scope
@@ -25,8 +25,8 @@ Phase 1:
 - Markdown incident report generation
 - Juju actions for diagnostics and report retrieval
 - structured JSONL audit logging
-- AI provider abstraction (Gemini) for suggest/act modes
-- 174 unit tests
+- AI provider abstraction (Gemini, OpenRouter) for suggest/act modes
+- 197 unit tests
 
 Out of scope for phase-1:
 
@@ -46,8 +46,8 @@ Jaime deployed as subordinate
 → tracks how long the unit remains unhealthy
 → after failure-timeout, opens an incident
 → loads diagnostics plan (or uses broad fallback)
-→ collects per-plan context (logs, processes, systemd, ports, env vars)
-→ collects background context (juju logs, disk, memory)
+→ collects per-plan context (logs, processes, systemd, ports, env vars, health commands)
+→ collects background context (juju logs, charm config, disk, memory)
 → writes Markdown report
 → writes JSONL audit events
 → respects cooldown before next report
@@ -63,11 +63,16 @@ sudo snap install lxd
 sudo usermod -aG lxd $USER
 newgrp lxd
 
-# Deploy
-charmcraft pack
+# Deploy a principal charm (e.g. postgresql)
 juju deploy postgresql --channel 16/stable --to 0
-juju deploy ./jaime_ubuntu-24.04-amd64.charm
-juju relate postgresql jaime
+
+# Set AI provider config (optional — works without AI too)
+export JAIME_PROVIDER=gemini
+export JAIME_MODEL=gemini-2.5-flash
+export JAIME_API_TOKEN="<your-token>"
+
+# Pack and deploy Jaime
+make deploy
 
 # Monitor
 juju status
@@ -90,12 +95,12 @@ juju run jaime/0 reset                 # Clear all incidents and start fresh
 | Key | Default | Description |
 |---|---|---|
 | `mode` | `observe` | `observe`, `suggest`, or `act` |
-| `provider` | `none` | AI provider (`none` or `gemini`) |
+| `provider` | `none` | AI provider (`none`, `gemini`, or `openrouter`) |
 | `api-token` | `""` | Juju secret reference for the AI token |
 | `watch-statuses` | `error,blocked` | Statuses that trigger an incident |
 | `failure-timeout-minutes` | `5` | How long a status must persist before reporting |
 | `cooldown-minutes` | `30` | Min time between reports for the same incident |
-| `log-window-minutes` | `30` | How far back to collect logs |
+| `log-window-minutes` | `120` | How far back to collect logs |
 | `max-context-lines` | `500` | Max lines per collected file/section |
 | `diagnostics` | `""` | JSON monitoring plan (empty = AI-generated on relation) |
 
@@ -109,7 +114,7 @@ The diagnostics plan drives what gets collected. It can be:
 2. **Manually configured** — set `diagnostics` config to a JSON monitoring plan
 3. **Empty** — Jaime falls back to broad commands (`ps aux`, `ss -tlnp`, `systemctl --failed`)
 
-Each plan section (`log_files`, `processes`, `systemd_units`, `network.ports`, `env_variables`) is iterated by the collector, and results appear in the report with status icons (✓/✗).
+Each plan section (`log_files`, `processes`, `systemd_units`, `network.ports`, `env_variables`, `health_commands`) is iterated by the collector, and results appear in the report with status icons (✓/✗).
 
 See `examples/diagnostics.json` for a sample plan and `examples/report.md` for the generated report output.
 
@@ -121,7 +126,7 @@ Collect context, generate reports, write audit logs. No AI interaction.
 
 ### suggest
 
-Same as observe, but after generating the base report, calls the AI provider and appends a diagnosis section. No commands are executed.
+Same as observe, but after generating the base report, calls the AI provider (Gemini or OpenRouter) and appends a diagnosis section. No commands are executed.
 
 ### act
 
@@ -141,6 +146,20 @@ Same as suggest, but executes commands returned by the AI. Gated behind explicit
 ```
 
 Tests auto-create a virtual environment in `.venv` on first run.
+
+## Development
+
+```bash
+make clean    # Remove build artifacts
+make pack     # Pack the charm
+make deploy   # Pack and deploy with AI provider config (requires env vars)
+```
+
+To update an existing deployment after re-packing:
+
+```bash
+juju refresh jaime --path=./jaime_ubuntu-24.04-amd64.charm --force-units
+```
 
 ## Design principle
 

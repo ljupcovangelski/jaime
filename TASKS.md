@@ -151,6 +151,8 @@ Only logic for `observe` mode is added at this phase.
 
 ## 2. Phase 2 — Assisted Remediation
 
+### 2.1. Incident suggestion
+
 Integrate AI providers to analyze incidents, suggest remediation actions, and optionally execute approved fixes while maintaining a complete audit trail.
 
 - [x] Add provider interface

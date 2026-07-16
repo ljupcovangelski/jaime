@@ -49,6 +49,22 @@
 - `PGPORT` = `5432` ✓
 - `POSTGRES_PASSWORD` — unset ✗
 
+## Health commands
+
+- `$ systemctl is-active postgresql@16-main.service` → exit 0 ✓
+  ```
+  active
+  ```
+- `$ pg_isready -h localhost -p 5432` → exit 1 ✗
+  ```
+  /tmp:5432 - no response
+  ```
+
+## Charm config
+
+- `max_connections`: `100`
+- `port`: `5432`
+
 ## Disk usage
 
 ```
@@ -66,8 +82,11 @@ Swap:          2.0G  0.5G  1.5G
 
 ## Recent unit logs
 
+_Showing only lines matching `error` or `warning` (case-insensitive), with a context window around the last match._
+
+_Logs are in chronological order._
+
 ```
-2026-07-14 09:55:00 INFO unit.postgresql/0.juju-log Reached goal state
 2026-07-14 09:55:01 WARNING unit.postgresql/0.juju-log Cannot start: no replicas
 2026-07-14 09:57:00 ERROR unit.postgresql/0.juju-log Hook start failed: disk full
 2026-07-14 09:58:00 INFO juju.worker Running cleanup hooks
