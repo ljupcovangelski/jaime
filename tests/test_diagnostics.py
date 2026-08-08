@@ -1,270 +1,214 @@
+import datetime
 import json
 import os
 import tempfile
 
 from jaime.diagnostics import (
-    DIAGNOSTICS_SCHEMA,
-    validate_diagnostics,
+    MONITORING_PLAN_SCHEMA,
+    validate_monitoring_plan,
     build_prompt,
     make_empty_plan,
     write_diagnostics_file,
     read_diagnostics_file,
+    read_plan_for_app,
+    ensure_plan_for_app,
 )
 
 
-class TestValidateDiagnostics:
+class TestValidateMonitoringPlan:
     def test_valid_full_plan_returns_empty_errors(self):
-        plan = {
-            "principal_name": "test-app",
-            "monitoring_plan": {
-                "log_files": [
-                    {"path": "/var/log/test.log", "priority": "high", "description": "test log"}
-                ],
-                "processes": [
-                    {"name": "testd", "expected_min_count": 1, "expected_max_count": 2}
-                ],
-                "env_variables": ["TEST_VAR"],
-                "network": {"ports": [{"port": 8080, "protocol": "tcp"}]},
-                "systemd_units": ["testd.service"],
-                "health_commands": [{"command": "systemctl is-active testd", "timeout_seconds": 5}],
-            },
+        mp = {
+            "log_files": [
+                {"path": "/var/log/test.log", "priority": "high", "description": "test log"}
+            ],
+            "processes": [
+                {"name": "testd", "expected_min_count": 1, "expected_max_count": 2}
+            ],
+            "env_variables": ["TEST_VAR"],
+            "network": {"ports": [{"port": 8080, "protocol": "tcp"}]},
+            "systemd_units": ["testd.service"],
+            "health_commands": [{"command": "systemctl is-active testd", "timeout_seconds": 5}],
         }
-        errors = validate_diagnostics(plan)
+        errors = validate_monitoring_plan(mp)
         assert errors == []
 
     def test_not_a_dict_returns_error(self):
-        errors = validate_diagnostics("not a dict")
-        assert errors == ["diagnostics must be a JSON object"]
+        errors = validate_monitoring_plan("not a dict")
+        assert errors == ["monitoring plan must be a JSON object"]
 
-    def test_empty_dict_returns_errors(self):
-        errors = validate_diagnostics({})
-        assert "missing required field: 'principal_name'" in errors
-        assert "missing required field: 'monitoring_plan'" in errors
-
-    def test_missing_monitoring_plan_field(self):
-        plan = {"principal_name": "test-app"}
-        errors = validate_diagnostics(plan)
-        assert any("missing required field" in e and "monitoring_plan" in e for e in errors)
-
-    def test_invalid_monitoring_plan_type(self):
-        plan = {"principal_name": "test-app", "monitoring_plan": "not an object"}
-        errors = validate_diagnostics(plan)
-        assert any("must be a JSON object" in e for e in errors)
+    def test_empty_dict_returns_no_errors(self):
+        errors = validate_monitoring_plan({})
+        assert errors == []
 
     def test_log_files_bad_type(self):
-        plan = {
-            "principal_name": "test-app",
-            "monitoring_plan": {
-                "log_files": "not a list",
-                "processes": [],
-                "env_variables": [],
-                "network": {"ports": []},
-            },
+        mp = {
+            "log_files": "not a list",
+            "processes": [],
+            "env_variables": [],
+            "network": {"ports": []},
         }
-        errors = validate_diagnostics(plan)
+        errors = validate_monitoring_plan(mp)
         assert any("log_files' must be a list" in e for e in errors)
 
     def test_log_file_missing_fields(self):
-        plan = {
-            "principal_name": "test-app",
-            "monitoring_plan": {
-                "log_files": [{"path": "/var/log/test.log"}],
-                "processes": [],
-                "env_variables": [],
-                "network": {"ports": []},
-            },
+        mp = {
+            "log_files": [{"path": "/var/log/test.log"}],
+            "processes": [],
+            "env_variables": [],
+            "network": {"ports": []},
         }
-        errors = validate_diagnostics(plan)
+        errors = validate_monitoring_plan(mp)
         assert any("missing 'priority'" in e for e in errors)
         assert any("missing 'description'" in e for e in errors)
 
     def test_log_file_invalid_priority(self):
-        plan = {
-            "principal_name": "test-app",
-            "monitoring_plan": {
-                "log_files": [
-                    {"path": "/var/log/test.log", "priority": "urgent", "description": "test"}
-                ],
-                "processes": [],
-                "env_variables": [],
-                "network": {"ports": []},
-            },
+        mp = {
+            "log_files": [
+                {"path": "/var/log/test.log", "priority": "urgent", "description": "test"}
+            ],
+            "processes": [],
+            "env_variables": [],
+            "network": {"ports": []},
         }
-        errors = validate_diagnostics(plan)
+        errors = validate_monitoring_plan(mp)
         assert any("priority" in e and "must be" in e for e in errors)
 
     def test_process_missing_name(self):
-        plan = {
-            "principal_name": "test-app",
-            "monitoring_plan": {
-                "log_files": [],
-                "processes": [{"expected_min_count": 1}],
-                "env_variables": [],
-                "network": {"ports": []},
-            },
+        mp = {
+            "log_files": [],
+            "processes": [{"expected_min_count": 1}],
+            "env_variables": [],
+            "network": {"ports": []},
         }
-        errors = validate_diagnostics(plan)
+        errors = validate_monitoring_plan(mp)
         assert any("missing 'name'" in e for e in errors)
 
     def test_processes_bad_type(self):
-        plan = {
-            "principal_name": "test-app",
-            "monitoring_plan": {
-                "log_files": [],
-                "processes": "not a list",
-                "env_variables": [],
-                "network": {"ports": []},
-            },
+        mp = {
+            "log_files": [],
+            "processes": "not a list",
+            "env_variables": [],
+            "network": {"ports": []},
         }
-        errors = validate_diagnostics(plan)
+        errors = validate_monitoring_plan(mp)
         assert any("processes' must be a list" in e for e in errors)
 
     def test_env_variables_bad_type(self):
-        plan = {
-            "principal_name": "test-app",
-            "monitoring_plan": {
-                "log_files": [],
-                "processes": [],
-                "env_variables": "not a list",
-                "network": {"ports": []},
-            },
+        mp = {
+            "log_files": [],
+            "processes": [],
+            "env_variables": "not a list",
+            "network": {"ports": []},
         }
-        errors = validate_diagnostics(plan)
+        errors = validate_monitoring_plan(mp)
         assert any("env_variables' must be a list" in e for e in errors)
 
     def test_env_variables_non_string(self):
-        plan = {
-            "principal_name": "test-app",
-            "monitoring_plan": {
-                "log_files": [],
-                "processes": [],
-                "env_variables": [123],
-                "network": {"ports": []},
-            },
+        mp = {
+            "log_files": [],
+            "processes": [],
+            "env_variables": [123],
+            "network": {"ports": []},
         }
-        errors = validate_diagnostics(plan)
+        errors = validate_monitoring_plan(mp)
         assert any("must be a string" in e for e in errors)
 
     def test_network_bad_type(self):
-        plan = {
-            "principal_name": "test-app",
-            "monitoring_plan": {
-                "log_files": [],
-                "processes": [],
-                "env_variables": [],
-                "network": "not an object",
-            },
+        mp = {
+            "log_files": [],
+            "processes": [],
+            "env_variables": [],
+            "network": "not an object",
         }
-        errors = validate_diagnostics(plan)
+        errors = validate_monitoring_plan(mp)
         assert any("network' must be an object" in e for e in errors)
 
     def test_network_ports_bad_type(self):
-        plan = {
-            "principal_name": "test-app",
-            "monitoring_plan": {
-                "log_files": [],
-                "processes": [],
-                "env_variables": [],
-                "network": {"ports": "not a list"},
-            },
+        mp = {
+            "log_files": [],
+            "processes": [],
+            "env_variables": [],
+            "network": {"ports": "not a list"},
         }
-        errors = validate_diagnostics(plan)
+        errors = validate_monitoring_plan(mp)
         assert any("ports' must be a list" in e for e in errors)
 
     def test_network_port_missing_fields(self):
-        plan = {
-            "principal_name": "test-app",
-            "monitoring_plan": {
-                "log_files": [],
-                "processes": [],
-                "env_variables": [],
-                "network": {"ports": [{"port": 8080}]},
-            },
+        mp = {
+            "log_files": [],
+            "processes": [],
+            "env_variables": [],
+            "network": {"ports": [{"port": 8080}]},
         }
-        errors = validate_diagnostics(plan)
+        errors = validate_monitoring_plan(mp)
         assert any("missing 'protocol'" in e for e in errors)
 
     def test_systemd_units_bad_type(self):
-        plan = {
-            "principal_name": "test-app",
-            "monitoring_plan": {
-                "log_files": [],
-                "processes": [],
-                "env_variables": [],
-                "network": {"ports": []},
-                "systemd_units": "not a list",
-            },
+        mp = {
+            "log_files": [],
+            "processes": [],
+            "env_variables": [],
+            "network": {"ports": []},
+            "systemd_units": "not a list",
         }
-        errors = validate_diagnostics(plan)
+        errors = validate_monitoring_plan(mp)
         assert any("systemd_units' must be a list" in e for e in errors)
 
     def test_systemd_units_non_string(self):
-        plan = {
-            "principal_name": "test-app",
-            "monitoring_plan": {
-                "log_files": [],
-                "processes": [],
-                "env_variables": [],
-                "network": {"ports": []},
-                "systemd_units": [123],
-            },
+        mp = {
+            "log_files": [],
+            "processes": [],
+            "env_variables": [],
+            "network": {"ports": []},
+            "systemd_units": [123],
         }
-        errors = validate_diagnostics(plan)
+        errors = validate_monitoring_plan(mp)
         assert any("must be a string" in e for e in errors)
 
     def test_health_commands_bad_type(self):
-        plan = {
-            "principal_name": "test-app",
-            "monitoring_plan": {
-                "log_files": [],
-                "processes": [],
-                "env_variables": [],
-                "network": {"ports": []},
-                "health_commands": "not a list",
-            },
+        mp = {
+            "log_files": [],
+            "processes": [],
+            "env_variables": [],
+            "network": {"ports": []},
+            "health_commands": "not a list",
         }
-        errors = validate_diagnostics(plan)
+        errors = validate_monitoring_plan(mp)
         assert any("health_commands' must be a list" in e for e in errors)
 
     def test_health_command_missing_command(self):
-        plan = {
-            "principal_name": "test-app",
-            "monitoring_plan": {
-                "log_files": [],
-                "processes": [],
-                "env_variables": [],
-                "network": {"ports": []},
-                "health_commands": [{"timeout_seconds": 5}],
-            },
+        mp = {
+            "log_files": [],
+            "processes": [],
+            "env_variables": [],
+            "network": {"ports": []},
+            "health_commands": [{"timeout_seconds": 5}],
         }
-        errors = validate_diagnostics(plan)
+        errors = validate_monitoring_plan(mp)
         assert any("missing 'command'" in e for e in errors)
 
     def test_optional_fields_omitted_are_valid(self):
-        plan = {
-            "principal_name": "test-app",
-            "monitoring_plan": {
-                "log_files": [],
-                "processes": [],
-                "env_variables": [],
-                "network": {"ports": []},
-            },
+        mp = {
+            "log_files": [],
+            "processes": [],
+            "env_variables": [],
+            "network": {"ports": []},
         }
-        errors = validate_diagnostics(plan)
+        errors = validate_monitoring_plan(mp)
         assert errors == []
 
 
 class TestDiagnosticsSchema:
-    def test_schema_has_expected_fields(self):
-        assert DIAGNOSTICS_SCHEMA["type"] == "object"
-        assert "principal_name" in DIAGNOSTICS_SCHEMA["properties"]
-        assert "monitoring_plan" in DIAGNOSTICS_SCHEMA["properties"]
-        assert "principal_name" in DIAGNOSTICS_SCHEMA["required"]
-        assert "monitoring_plan" in DIAGNOSTICS_SCHEMA["required"]
+    def test_schema_is_dict(self):
+        assert isinstance(MONITORING_PLAN_SCHEMA, dict)
+        assert MONITORING_PLAN_SCHEMA["type"] == "object"
+        assert "log_files" in MONITORING_PLAN_SCHEMA["properties"]
+        assert "monitoring_plan" not in MONITORING_PLAN_SCHEMA
+        assert "principal_name" not in MONITORING_PLAN_SCHEMA
 
 
 class TestBuildPrompt:
-    def test_contains_principal_name(self):
+    def test_contains_app_name(self):
         prompt = build_prompt("postgresql")
         assert "postgresql" in prompt
         assert "monitoring plan" in prompt.lower()
@@ -278,11 +222,7 @@ class TestBuildPrompt:
 
 class TestMakeEmptyPlan:
     def test_returns_correct_structure(self):
-        plan = make_empty_plan("test-app")
-        assert plan["principal_name"] == "test-app"
-        assert "generated_at" in plan
-        assert "+00:00" in plan["generated_at"] or plan["generated_at"].endswith("Z")
-        mp = plan["monitoring_plan"]
+        mp = make_empty_plan()
         assert mp["log_files"] == []
         assert mp["processes"] == []
         assert mp["env_variables"] == []
@@ -291,46 +231,149 @@ class TestMakeEmptyPlan:
         assert mp["health_commands"] == []
 
     def test_plan_passes_validation(self):
-        plan = make_empty_plan("test-app")
-        errors = validate_diagnostics(plan)
+        mp = make_empty_plan()
+        errors = validate_monitoring_plan(mp)
         assert errors == []
 
 
+class TestReadPlanForApp:
+    def test_returns_monitoring_plan_for_existing_app(self):
+        data = {
+            "generated_at": "2026-07-15T12:00:00",
+            "plans": {"postgresql": make_empty_plan()},
+        }
+        with tempfile.NamedTemporaryFile(suffix=".json", mode="w", delete=False) as f:
+            json.dump(data, f)
+            path = f.name
+        try:
+            result = read_plan_for_app("postgresql", path)
+            assert "monitoring_plan" in result
+            assert result["monitoring_plan"]["log_files"] == []
+        finally:
+            os.unlink(path)
+
+    def test_returns_empty_plan_for_missing_app(self):
+        data = {
+            "generated_at": "2026-07-15T12:00:00",
+            "plans": {"other": make_empty_plan()},
+        }
+        with tempfile.NamedTemporaryFile(suffix=".json", mode="w", delete=False) as f:
+            json.dump(data, f)
+            path = f.name
+        try:
+            result = read_plan_for_app("unknown", path)
+            assert result["monitoring_plan"]["log_files"] == []
+        finally:
+            os.unlink(path)
+
+    def test_returns_empty_plan_for_missing_file(self):
+        result = read_plan_for_app("any", "/tmp/does_not_exist.json")
+        assert result["monitoring_plan"]["log_files"] == []
+
+
+class TestEnsurePlanForApp:
+    def test_uses_existing_plan(self):
+        data = {
+            "generated_at": "2026-07-15T12:00:00",
+            "plans": {"myapp": make_empty_plan()},
+        }
+        with tempfile.NamedTemporaryFile(suffix=".json", mode="w", delete=False) as f:
+            json.dump(data, f)
+            path = f.name
+        try:
+            result = ensure_plan_for_app("myapp", path, provider=None)
+            assert result["monitoring_plan"]["log_files"] == []
+        finally:
+            os.unlink(path)
+
+    def test_creates_empty_plan_when_no_provider(self):
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            path = f.name
+            os.unlink(path)
+        try:
+            result = ensure_plan_for_app("newapp", path, provider=None)
+            assert result["monitoring_plan"]["log_files"] == []
+            data = read_diagnostics_file(path)
+            assert "newapp" in data["plans"]
+        finally:
+            if os.path.exists(path):
+                os.unlink(path)
+
+    def test_creates_empty_plan_on_provider_failure(self):
+        class FakeFailingProvider:
+            def generate(self, prompt):
+                raise RuntimeError("API error")
+
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            path = f.name
+            os.unlink(path)
+        try:
+            result = ensure_plan_for_app("badapp", path, provider=FakeFailingProvider())
+            assert result["monitoring_plan"]["log_files"] == []
+        finally:
+            if os.path.exists(path):
+                os.unlink(path)
+
+    def test_creates_plan_from_provider(self):
+        class FakeProvider:
+            def generate(self, prompt):
+                return json.dumps(make_empty_plan())
+
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            path = f.name
+            os.unlink(path)
+        try:
+            result = ensure_plan_for_app("goodapp", path, provider=FakeProvider())
+            assert result["monitoring_plan"]["log_files"] == []
+        finally:
+            if os.path.exists(path):
+                os.unlink(path)
+
+    def test_fallback_to_empty_on_invalid_provider_response(self):
+        class FakeBadProvider:
+            def generate(self, prompt):
+                return '{"log_files": "not_a_list"}'
+
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            path = f.name
+            os.unlink(path)
+        try:
+            result = ensure_plan_for_app("badplan", path, provider=FakeBadProvider())
+            assert result["monitoring_plan"]["log_files"] == []
+        finally:
+            if os.path.exists(path):
+                os.unlink(path)
+
+
 class TestWriteReadDiagnosticsFile:
-    def test_write_and_read_roundtrip(self):
-        plan = make_empty_plan("roundtrip-test")
+    def test_write_and_read_v2_roundtrip(self):
+        data = {
+            "generated_at": "2026-07-15T12:00:00",
+            "plans": {"test-app": make_empty_plan()},
+        }
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
             path = f.name
         try:
-            written = write_diagnostics_file(plan, path)
+            written = write_diagnostics_file(data, path)
             assert written == path
-
             read_back = read_diagnostics_file(path)
-            assert read_back["principal_name"] == "roundtrip-test"
-            assert "monitoring_plan" in read_back
+            assert "plans" in read_back
+            assert "test-app" in read_back["plans"]
         finally:
             os.unlink(path)
 
     def test_creates_directories(self):
+        data = {
+            "generated_at": "2026-07-15T12:00:00",
+            "plans": {"dir-test": make_empty_plan()},
+        }
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "sub", "nested", "diagnostics.json")
-            plan = make_empty_plan("dir-test")
-            written = write_diagnostics_file(plan, path)
+            written = write_diagnostics_file(data, path)
             assert os.path.exists(written)
             read_back = read_diagnostics_file(path)
-            assert read_back["principal_name"] == "dir-test"
-
-    def test_accepts_json_string(self):
-        plan = make_empty_plan("string-test")
-        json_str = json.dumps(plan)
-        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
-            path = f.name
-        try:
-            write_diagnostics_file(json_str, path)
-            read_back = read_diagnostics_file(path)
-            assert read_back["principal_name"] == "string-test"
-        finally:
-            os.unlink(path)
+            assert "plans" in read_back
+            assert "dir-test" in read_back["plans"]
 
     def test_read_missing_file_returns_none(self):
         result = read_diagnostics_file("/tmp/nonexistent-file-12345.json")
@@ -343,5 +386,58 @@ class TestWriteReadDiagnosticsFile:
         try:
             result = read_diagnostics_file(path)
             assert result is None
+        finally:
+            os.unlink(path)
+
+
+class TestBackwardCompat:
+    def test_v1_format_migrated_on_read(self):
+        v1_data = {
+            "principal_name": "legacy-app",
+            "monitoring_plan": make_empty_plan(),
+            "generated_at": "2026-01-01T00:00:00",
+        }
+        with tempfile.NamedTemporaryFile(suffix=".json", mode="w", delete=False) as f:
+            json.dump(v1_data, f)
+            path = f.name
+        try:
+            result = read_diagnostics_file(path)
+            assert "plans" in result
+            assert "legacy-app" in result["plans"]
+            assert "principal_name" not in result
+            assert "monitoring_plan" not in result
+        finally:
+            os.unlink(path)
+
+    def test_v1_format_migrated_on_write(self):
+        v1_data = {
+            "principal_name": "legacy-app",
+            "monitoring_plan": make_empty_plan(),
+        }
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            path = f.name
+            os.unlink(path)
+        try:
+            write_diagnostics_file(v1_data, path)
+            result = read_diagnostics_file(path)
+            assert "plans" in result
+            assert "legacy-app" in result["plans"]
+            assert "principal_name" not in result
+        finally:
+            if os.path.exists(path):
+                os.unlink(path)
+
+    def test_v1_to_v2_read_plan_for_app(self):
+        v1_data = {
+            "principal_name": "oldie",
+            "monitoring_plan": make_empty_plan(),
+            "generated_at": "2026-01-01T00:00:00",
+        }
+        with tempfile.NamedTemporaryFile(suffix=".json", mode="w", delete=False) as f:
+            json.dump(v1_data, f)
+            path = f.name
+        try:
+            result = read_plan_for_app("oldie", path)
+            assert result["monitoring_plan"]["log_files"] == []
         finally:
             os.unlink(path)

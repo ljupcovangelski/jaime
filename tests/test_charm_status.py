@@ -42,20 +42,6 @@ def make_goal_relations(status, since=SINCE):
     return {"postgresql/0": unit_goal, "postgresql": app_goal}
 
 
-def _is_incident_opened(record):
-    try:
-        return json.loads(record.getMessage()).get("event") == "incident-opened"
-    except (json.JSONDecodeError, AttributeError):
-        return False
-
-
-def _is_cooldown(record):
-    try:
-        return json.loads(record.getMessage()).get("event") == "principal-status-cooldown"
-    except (json.JSONDecodeError, AttributeError):
-        return False
-
-
 def make_harness(tmp_path, config_overrides=None):
     """Return a started Harness with diagnostics side-effects suppressed."""
     cfg = {**_DEFAULT_CONFIG, **(config_overrides or {})}
@@ -89,11 +75,12 @@ def call_log_status(harness, goal_relations, now):
              mock.patch("charm.collect_context", return_value={}), \
              mock.patch("charm.generate_report", return_value="/tmp/test-report.md"), \
              mock.patch("charm.write_event"), \
+             mock.patch("charm.ensure_plan_for_app"), \
              mock.patch("builtins.open", mock.mock_open(read_data="report content")):
             mock_dt.datetime.now.return_value = now
             mock_dt.datetime.fromisoformat = datetime.datetime.fromisoformat
             mock_dt.timezone.utc = datetime.timezone.utc
-            harness.charm._log_principal_status()
+            harness.charm._log_principal_status(goal_relations)
     finally:
         charm_logger.removeHandler(handler)
 
@@ -173,7 +160,6 @@ class TestFailureTimeout:
         assert "incident" in entry
         assert "id" in entry["incident"]
         assert "opened_at" in entry["incident"]
-        # UUID format check
         import uuid
         uuid.UUID(entry["incident"]["id"])  # raises if invalid
 
@@ -234,7 +220,6 @@ class TestRecovery:
         assert entry["workload"] == "active"
 
     def test_new_episode_same_status_clears_cooldown(self, tmp_path):
-        """Same status string but new since → new episode → cooldown cleared."""
         h = make_harness(tmp_path)
         since_1 = SINCE
         since_2 = SINCE + datetime.timedelta(hours=1)
@@ -264,11 +249,9 @@ class TestRecovery:
 
     def test_recovery_closes_open_incident(self, tmp_path):
         h = make_harness(tmp_path)
-        # Open an incident
         first_now = SINCE + datetime.timedelta(minutes=10)
         call_log_status(h, make_goal_relations("blocked"), first_now)
 
-        # Principal recovers
         recovery_since = SINCE + datetime.timedelta(minutes=20)
         now = SINCE + datetime.timedelta(minutes=25)
         call_log_status(h, make_goal_relations("active", since=recovery_since), now)
@@ -304,14 +287,14 @@ class TestUnitStatus:
         assert isinstance(h.charm.unit.status, WaitingStatus)
         assert "waiting" in h.charm.unit.status.message
 
-    def test_maintenance_status_set_when_incident_opened(self, tmp_path):
+    def test_active_status_set_when_incident_opened(self, tmp_path):
         h = make_harness(tmp_path)
         now = SINCE + datetime.timedelta(minutes=10)
         call_log_status(h, make_goal_relations("blocked"), now)
         assert isinstance(h.charm.unit.status, ActiveStatus)
         assert "incident open" in h.charm.unit.status.message
 
-    def test_maintenance_status_set_during_cooldown(self, tmp_path):
+    def test_active_status_set_during_cooldown(self, tmp_path):
         h = make_harness(tmp_path)
         first_now = SINCE + datetime.timedelta(minutes=10)
         call_log_status(h, make_goal_relations("blocked"), first_now)
@@ -331,6 +314,55 @@ class TestUnitStatus:
         assert h.charm.unit.status.message == "Ready"
 
 
+class TestMultiRelation:
+    """Tests for monitoring units from multiple goal-state relations."""
+
+    def make_multi_goal_units(self, status1="blocked", app1="postgresql/0",
+                              status2="error", app2="logrotated/1"):
+        unit1 = mock.MagicMock()
+        unit1.status = status1
+        unit1.since = SINCE
+        app_goal1 = mock.MagicMock()
+        app_goal1.status = "joined"
+        app_goal1.since = SINCE
+        unit2 = mock.MagicMock()
+        unit2.status = status2
+        unit2.since = SINCE
+        app_goal2 = mock.MagicMock()
+        app_goal2.status = "joined"
+        app_goal2.since = SINCE
+
+        # Flatten all relations into one dict, same as _on_update_status does
+        return {
+            app1: unit1, "postgresql": app_goal1,
+            app2: unit2, "logrotated": app_goal2,
+        }
+
+    def test_both_units_processed(self, tmp_path):
+        h = make_harness(tmp_path)
+        now = SINCE + datetime.timedelta(minutes=6)
+        goal = self.make_multi_goal_units()
+        records = call_log_status(h, goal, now)
+
+        watched = [r for r in records if "principal-status-watched" in r.getMessage()]
+        assert len(watched) == 2
+        entries = {json.loads(r.getMessage())["unit"]: json.loads(r.getMessage()) for r in watched}
+        assert "postgresql/0" in entries
+        assert "logrotated/1" in entries
+        assert entries["postgresql/0"]["workload"] == "blocked"
+        assert entries["logrotated/1"]["workload"] == "error"
+
+    def test_one_unit_healthy_one_unhealthy(self, tmp_path):
+        h = make_harness(tmp_path)
+        now = SINCE + datetime.timedelta(minutes=6)
+        goal = self.make_multi_goal_units(status1="active", status2="error")
+        records = call_log_status(h, goal, now)
+
+        watched = [r for r in records if "principal-status-watched" in r.getMessage()]
+        assert len(watched) == 1
+        assert json.loads(watched[0].getMessage())["unit"] == "logrotated/1"
+
+
 class TestGoalStateError:
     def test_goal_state_exception_logs_warning(self, tmp_path):
         h = make_harness(tmp_path)
@@ -346,8 +378,22 @@ class TestGoalStateError:
         charm_logger.setLevel(logging.WARNING)
         try:
             with mock.patch("ops.hookcmds.goal_state", side_effect=RuntimeError("socket error")):
-                h.charm._log_principal_status()
+                h.charm._on_update_status(mock.MagicMock())
         finally:
             charm_logger.removeHandler(handler)
 
-        assert any("could not read principal goal-state" in r.getMessage() for r in log_records)
+        assert any("could not read goal-state" in r.getMessage() for r in log_records)
+
+
+def _is_incident_opened(record):
+    try:
+        return json.loads(record.getMessage()).get("event") == "incident-opened"
+    except (json.JSONDecodeError, AttributeError):
+        return False
+
+
+def _is_cooldown(record):
+    try:
+        return json.loads(record.getMessage()).get("event") == "principal-status-cooldown"
+    except (json.JSONDecodeError, AttributeError):
+        return False

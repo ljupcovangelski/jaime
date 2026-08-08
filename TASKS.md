@@ -149,6 +149,28 @@ Only logic for `observe` mode is added at this phase.
 - [x] [python] Parse diagnostics.json and pass to collect_context for plan-driven collection in reports
 - [x] [python] Collect and append health commands output to the incident report
 
+### 1.12. Monitor multiple charms
+
+- [x] [charm] Discover all co-located units via filesystem (/var/lib/juju/agents/) instead of goal-state
+- [x] [charm] Implement goal_state() as primary status source (reliable, works in hook sandbox)
+- [x] [charm] Add filesystem status reading as fallback for non-related units (limited to Juju 2.x; Juju 3.x does not store workload status locally)
+- [x] [charm] Add juju show-unit subprocess fallback (best-effort, requires controller credentials)
+- [x] [charm] Track and report incidents independently per co-located unit (principal and subordinates)
+- [x] [charm] Update _log_principal_status to iterate all co-located units
+- [x] [charm] Remove hard dependency on `principal` relation for unit discovery (keep for co-location only)
+- [ ] [docs] Update ARCHITECTURE.md with new multi-unit monitoring design
+- [ ] [charm] Handle subordinates joining after initial setup (deferred — requires a periodic re-discovery mechanism)
+- [ ] [charm] Handle subordinates leaving the machine (deferred — stale state cleanup)
+
+#### Known limitation (Juju 3.x)
+
+Juju 3.x stores workload status in the controller database, not in local files on the machine.
+The ``state/`` directory under each unit's agent dir only contains ``deployer/`` and ``bundles/`` metadata.
+Therefore filesystem-based status reading of non-related co-located units is not possible in Juju 3.x.
+
+For the related principal unit, ``goal_state()`` works reliably. For other units on the machine, the
+``juju show-unit --format=json`` CLI fallback is attempted (requires controller credentials).
+
 ## 2. Phase 2 — Assisted Remediation
 
 ### 2.1. Incident suggestion

@@ -2,7 +2,7 @@
 
 ## Overview
 
-Jaime is a Juju machine subordinate charm that runs on the same machine as a principal application charm. Its job is to observe the principal unit, detect sustained unhealthy states, collect compact diagnostics, and generate structured incident reports.
+Jaime is a Juju machine subordinate charm that runs on the same machine as one or more application charms. Its job is to observe all co-located units (principal and subordinate), detect sustained unhealthy states, collect compact diagnostics, and generate structured incident reports.
 
 Phase-1 is observe-only. Remediation is a future feature.
 
@@ -11,15 +11,17 @@ Phase-1 is observe-only. Remediation is a future feature.
 ```text
 Juju model
 └── machine
-    ├── principal charm unit
-    │   └── application workload (daemon or systemd service)
+    ├── principal charm unit A
+    │   ├── application workload (daemon or systemd service)
+    │   └── subordinate charm unit B
+    ├── principal charm unit C (unrelated, ignored by jaime)
     └── jaime subordinate unit
         ├── charm event handlers
-        ├── principal status monitor
+        ├── co-located unit monitor (all units on machine except jaime)
         ├── context collector
-        ├── incident tracker
+        ├── incident tracker (per-unit)
         ├── JSONL audit logger
-        ├── report generator
+        ├── report generator (per-incident)
         └── AI provider adapter, optional
 ```
 
@@ -42,51 +44,55 @@ Business logic should remain outside the charm event handlers where possible to 
 
 ## Core loop
 
-Jaime uses Juju charm events, especially `update-status`, to periodically inspect the related principal unit.
+Jaime uses Juju charm events, especially `update-status`, to periodically inspect all co-located units on the same machine.
 Jaimie should not talk directly to the Juju controller API in phase-1.
-On `update-status`, Jaimie should identify the related principal unit using local charm context, subordinate relation data, Juju hook tools, and/or `goal-state`.
-The principal status should be read from the local Juju execution context where possible, not by authenticating to the controller as an external client.
+On `update-status`, Jaimie should identify all co-located units (excluding itself) using goal-state.
+Each unit's status should be read from the local Juju execution context where possible, not by authenticating to the controller as an external client.
 
-Algorithm:
+The diagnostics plan is generated once per related principal app and applies to all co-located units sharing that machine.
+
+Algorithm per co-located unit:
 
 ```text
 on update-status:
-  identify related principal unit
-  read principal status
+  discover all co-located units via goal-state
+  for each unit (excluding jaime itself):
 
-  if principal status is healthy:
-    if there is an active incident:
-      write incident-recovered event
-      close incident
-    exit
+    read unit status
 
-  if principal status is in watch-statuses:
-    if there is no active incident:
-      create incident
-      store first_seen timestamp
-      write incident-start event
+    if unit status is healthy:
+      if there is an active incident for this unit:
+        write incident-recovered event
+        close incident
+      continue
 
-    if unhealthy duration is below failure-timeout-minutes:
-      write still-unhealthy event
-      exit
+    if unit status is in watch-statuses:
+      if there is no active incident for this unit:
+        create incident
+        store first_seen timestamp
+        write incident-start event
 
-    if report already generated for this incident:
-      respect cooldown and exit
+      if unhealthy duration is below failure-timeout-minutes:
+        write still-unhealthy event
+        continue
 
-    load diagnostics plan
-    if plan is available and has items in a section:
-      collect per-plan context (tail log files, pgrep processes, systemctl is-active, ss port check, os.environ.get)
-    else for each empty or missing section:
-      collect broad fallback (ps aux for processes, systemctl --failed for systemd, ss -tlnp for ports)
-    collect background context (Juju unit logs, disk usage, memory summary)
-    write raw context bundle
+      if report already generated for this incident:
+        respect cooldown and continue
 
-    if mode is suggest or act and AI provider is configured:
-      generate AI-assisted Markdown report with AI suggestions
-    else:
-      generate non-AI Markdown report
+      load diagnostics plan
+      if plan is available and has items in a section:
+        collect per-plan context (tail log files, pgrep processes, systemctl is-active, ss port check, os.environ.get)
+      else for each empty or missing section:
+        collect broad fallback (ps aux for processes, systemctl --failed for systemd, ss -tlnp for ports)
+      collect background context (Juju unit logs, disk usage, memory summary)
+      write raw context bundle
 
-    write report-generated event
+      if mode is suggest or act and AI provider is configured:
+        generate AI-assisted Markdown report with AI suggestions
+      else:
+        generate non-AI Markdown report
+
+      write report-generated event
 ```
 
 ## Modes
@@ -132,13 +138,18 @@ When implemented, act mode must use:
 - structured audit trail
 - rollback metadata where possible
 
-## Principal status source
+## Unit discovery and status source
+
+Jaime discovers co-located units by reading goal-state on every `update-status` tick.
+Units are identified by filtering goal-state to those running on the same machine as jaime itself.
+The `principal` relation is used only for co-location (placing jaime on the correct machine) and for
+diagnostics plan generation, not for unit discovery.
 
 Primary source:
 
 - Juju charm context and hook tools
-- relation context
-- goal-state/status-related information where available
+- goal-state for co-located unit discovery and status
+- relation context for diagnostics plan generation
 
 Secondary source:
 

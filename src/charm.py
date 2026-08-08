@@ -13,12 +13,13 @@ from ops.main import main
 from ops.model import ActiveStatus, BlockedStatus, MaintenanceStatus, WaitingStatus
 
 from jaime.diagnostics import (
-    validate_diagnostics,
-    build_prompt,
-    write_diagnostics_file,
-    read_diagnostics_file,
+    validate_monitoring_plan,
+    ensure_plan_for_app,
+    read_plan_for_app,
     make_empty_plan,
+    write_diagnostics_file,
 )
+from jaime.discovery import discover_colocated_units, read_unit_workload_status
 from jaime.principal import StatusTracker
 from jaime.incident import Incident, Suggestion
 from jaime.collector import collect_context
@@ -73,20 +74,31 @@ class JaimeCharm(CharmBase):
 
     def _on_update_status(self, event):
         try:
-            relations = list(self.model.relations.get("principal", []))
-        except Exception:
-            relations = []
+            from ops.hookcmds import goal_state
+            gs = goal_state()
+            # Collect ALL units from ALL goal-state relations (not just "principal").
+            # This allows monitoring any co-located unit that jaime has a relation
+            # with (e.g. logrotated via juju-info).
+            goal_units = {}
+            for rel_units in gs.relations.values():
+                goal_units.update(rel_units)
+        except Exception as e:
+            logger.warning("could not read goal-state: %s", e)
+            goal_units = {}
 
-        if relations:
-            self._log_principal_status()
+        discovered = discover_colocated_units(skip_unit=self.unit.name)
+
+        if goal_units or discovered:
+            self._log_principal_status(goal_units, discovered)
         else:
             self.unit.status = MaintenanceStatus("waiting for principal relation")
 
-    def _log_principal_status(self):
-        """Read principal unit workload status via goal-state and emit a JSON debug log.
+    def _log_principal_status(self, goal_units: dict, discovered: list[str] | None = None):
+        """Read workload status for related units and update monitoring state.
 
-        On every tick, logs the status of watched units and updates Jaime's own
-        unit status to reflect the current monitoring state.
+        Uses Juju goal-state for all related units (reliable, works in hook
+        sandbox) and filesystem discovery as a best-effort supplement for
+        co-located units that are not in a direct relation.
 
         State machine for self.unit.status:
           - healthy / not watched      → ActiveStatus("Ready")
@@ -105,68 +117,241 @@ class JaimeCharm(CharmBase):
         cooldown = self.model.config.get("cooldown-minutes", 30)
 
         now = datetime.datetime.now(datetime.timezone.utc)
+        provider = self._get_ai_provider()
+        status_set = False
 
-        # Build the set of units actually related to this Jaime instance.
-        # goal-state can return units from other relations on the same machine
-        # (e.g. when two subordinates share a host), so we must filter to only
-        # our own principal units.
-        own_principal_units: set[str] = set()
-        for rel in self.model.relations.get("principal", []):
-            for unit in rel.units:
-                own_principal_units.add(unit.name)
+        # Build set of units already processed via goal_state to avoid duplicates.
+        processed_units: set[str] = set()
 
-        try:
-            from ops.hookcmds import goal_state
-            gs = goal_state()
-            principal_relations = gs.relations.get("principal", {})
-            for unit_name, goal in principal_relations.items():
-                if "/" not in unit_name:
+        # 1. Process units from goal-state (reliable).
+        for unit_name, goal in goal_units.items():
+            if "/" not in unit_name:
+                continue
+
+            status = goal.status
+            since_iso = goal.since.isoformat()
+            since_dt = goal.since
+            processed_units.add(unit_name)
+            status_set = True
+
+            app_name = unit_name.split("/")[0]
+            try:
+                ensure_plan_for_app(app_name, self._diagnostics_path, provider)
+            except Exception as e:
+                logger.warning("could not ensure plan for %s: %s", app_name, e)
+
+            had_open_incident = self._status_tracker.has_open_incident(unit_name)
+            prior_incident = self._status_tracker.current_incident(unit_name)
+            increment = self._status_tracker.observe(unit_name, status, since_iso)
+
+            if status not in watch_statuses:
+                if increment == 1 and had_open_incident and prior_incident:
+                    closed = Incident.from_dict(prior_incident).close()
+                    self._status_tracker.close_incident(unit_name, closed.to_dict())
+                    logger.info(
+                        json.dumps({
+                            "event": "incident-closed",
+                            "unit": unit_name,
+                            "workload": status,
+                            "incident": closed.to_dict(),
+                            "timestamp": now.isoformat(),
+                        })
+                    )
+                elif increment == 1:
+                    logger.debug(
+                        json.dumps({
+                            "event": "principal-status-recovered",
+                            "unit": unit_name,
+                            "workload": status,
+                            "timestamp": now.isoformat(),
+                        })
+                    )
+                else:
+                    logger.debug(
+                        "unit %s: workload=%s (not watched, increment=%d)",
+                        unit_name, status, increment,
+                    )
+                self.unit.status = ActiveStatus("Ready")
+                continue
+
+            logger.debug(json.dumps({
+                "event": "principal-status-watched",
+                "unit": unit_name,
+                "workload": status,
+                "first_seen": since_iso,
+                "increment": increment,
+                "timestamp": now.isoformat(),
+            }))
+
+            unhealthy_minutes = (now - since_dt).total_seconds() / 60
+            if unhealthy_minutes < failure_timeout:
+                logger.debug(
+                    "unit %s: unhealthy for %.1f min, "
+                    "waiting for failure-timeout (%d min)",
+                    unit_name, unhealthy_minutes, failure_timeout,
+                )
+                self.unit.status = WaitingStatus(
+                    f"{status} - waiting ({unhealthy_minutes:.1f}/{failure_timeout} min)"
+                )
+                continue
+
+            last_reported_iso = self._status_tracker.last_reported(unit_name)
+            if last_reported_iso:
+                last_reported_dt = datetime.datetime.fromisoformat(last_reported_iso)
+                cooldown_elapsed = (now - last_reported_dt).total_seconds() / 60
+                if cooldown_elapsed < cooldown:
+                    incident_dict = self._status_tracker.current_incident(unit_name)
+                    logger.debug(json.dumps({
+                        "event": "principal-status-cooldown",
+                        "unit": unit_name,
+                        "workload": status,
+                        "first_seen": since_iso,
+                        "increment": increment,
+                        "cooldown_elapsed_minutes": round(cooldown_elapsed, 1),
+                        "cooldown_minutes": cooldown,
+                        "incident": incident_dict,
+                        "timestamp": now.isoformat(),
+                    }))
+                    short_id = (incident_dict or {}).get("id", "")[:8]
+                    if not isinstance(self.unit.status, BlockedStatus):
+                        self.unit.status = ActiveStatus(
+                            f"incident open: {status} ({short_id})"
+                        )
                     continue
-                # Skip units that don't belong to this Jaime's principal relation.
-                # Allow all when own_principal_units is empty (e.g. relation not yet established).
-                if own_principal_units and unit_name not in own_principal_units:
+
+            incident = Incident.open()
+            short_id = incident.id[:8]
+            logger.info(json.dumps({
+                "event": "incident-opened",
+                "unit": unit_name,
+                "workload": status,
+                "first_seen": since_iso,
+                "increment": increment,
+                "incident": incident.to_dict(),
+                "timestamp": now.isoformat(),
+            }))
+            self._status_tracker.record_reported(unit_name, now.isoformat(), incident.to_dict())
+            self.unit.status = ActiveStatus(
+                f"incident open: {status} ({short_id})"
+            )
+            write_event({
+                "event": "incident-start",
+                "unit": unit_name,
+                "workload": status,
+                "first_seen": since_iso,
+                "incident_id": incident.id,
+                "timestamp": now.isoformat(),
+            }, self.model.config.get("audit-log-path", ""))
+
+            self.unit.status = MaintenanceStatus(
+                f"collecting context: {status} ({short_id})"
+            )
+            log_window = self.model.config.get("log-window-minutes", 30)
+            max_lines = self.model.config.get("max-context-lines", 500)
+            from_dt = datetime.datetime.fromisoformat(since_iso)
+            app_name = unit_name.split("/")[0]
+            plan = read_plan_for_app(app_name, self._diagnostics_path)
+            context = collect_context(
+                unit_name, log_window, max_lines,
+                from_time=from_dt,
+                diagnostics_plan=plan,
+            )
+            write_event({
+                "event": "context-collected",
+                "unit": unit_name,
+                "incident_id": incident.id,
+                "log_lines": len(context.get("unit_logs", [])),
+                "timestamp": now.isoformat(),
+            }, self.model.config.get("audit-log-path", ""))
+
+            report_path = generate_report(
+                incident_id=incident.id,
+                unit_name=unit_name,
+                workload=status,
+                first_seen=since_iso,
+                context=context,
+                report_dir=self.model.config.get("report-dir", ""),
+            )
+            write_event({
+                "event": "report-generated",
+                "unit": unit_name,
+                "incident_id": incident.id,
+                "report_path": report_path,
+                "timestamp": now.isoformat(),
+            }, self.model.config.get("audit-log-path", ""))
+            logger.info("incident %s: report written to %s", short_id, report_path)
+
+            with open(report_path) as f:
+                report_content = f.read()
+
+            suggestion = self._run_mode_logic(report_content)
+            if suggestion is not None:
+                self._store_suggestion(unit_name, incident.to_dict(), suggestion)
+            if not isinstance(self.unit.status, BlockedStatus):
+                self.unit.status = ActiveStatus(
+                    f"incident open: {status} ({short_id})"
+                )
+
+        # 2. Process additional co-located units from filesystem discovery
+        #    (best-effort, may fail due to filesystem permissions).
+        if discovered:
+            logger.info("processing discovered units: %s", discovered)
+            for unit_name in discovered:
+                if unit_name in processed_units:
+                    continue
+                status_info = read_unit_workload_status(unit_name)
+                if status_info is None:
+                    logger.debug(
+                        "could not read workload status for %s (filesystem discovery), "
+                        "skipping — agent state file may not be readable by this unit",
+                        unit_name,
+                    )
                     continue
 
-                status = goal.status
-                since_iso = goal.since.isoformat()
-                # Capture incident state before observe() may clear it on a new episode.
+                status = status_info["current"]
+                since_iso = status_info["since"]
+                try:
+                    since_dt = datetime.datetime.fromisoformat(since_iso)
+                except (ValueError, TypeError):
+                    since_dt = now
+                status_set = True
+
+                app_name = unit_name.split("/")[0]
+                try:
+                    ensure_plan_for_app(app_name, self._diagnostics_path, provider)
+                except Exception as e:
+                    logger.warning("could not ensure plan for %s: %s", app_name, e)
+
                 had_open_incident = self._status_tracker.has_open_incident(unit_name)
                 prior_incident = self._status_tracker.current_incident(unit_name)
                 increment = self._status_tracker.observe(unit_name, status, since_iso)
 
-                # --- Recovery ---
                 if status not in watch_statuses:
                     if increment == 1 and had_open_incident and prior_incident:
-                        # Close the open incident.
                         closed = Incident.from_dict(prior_incident).close()
                         self._status_tracker.close_incident(unit_name, closed.to_dict())
-                        logger.info(
-                            json.dumps({
-                                "event": "incident-closed",
-                                "unit": unit_name,
-                                "workload": status,
-                                "incident": closed.to_dict(),
-                                "timestamp": now.isoformat(),
-                            })
-                        )
+                        logger.info(json.dumps({
+                            "event": "incident-closed",
+                            "unit": unit_name,
+                            "workload": status,
+                            "incident": closed.to_dict(),
+                            "timestamp": now.isoformat(),
+                        }))
                     elif increment == 1:
-                        logger.debug(
-                            json.dumps({
-                                "event": "principal-status-recovered",
-                                "unit": unit_name,
-                                "workload": status,
-                                "timestamp": now.isoformat(),
-                            })
-                        )
+                        logger.debug(json.dumps({
+                            "event": "principal-status-recovered",
+                            "unit": unit_name,
+                            "workload": status,
+                            "timestamp": now.isoformat(),
+                        }))
                     else:
                         logger.debug(
-                            "principal unit %s: workload=%s (not watched, increment=%d)",
+                            "unit %s: workload=%s (not watched, increment=%d)",
                             unit_name, status, increment,
                         )
                     self.unit.status = ActiveStatus("Ready")
                     continue
 
-                # Always log the current watched status.
                 logger.debug(json.dumps({
                     "event": "principal-status-watched",
                     "unit": unit_name,
@@ -176,11 +361,10 @@ class JaimeCharm(CharmBase):
                     "timestamp": now.isoformat(),
                 }))
 
-                # --- Within failure-timeout: waiting ---
-                unhealthy_minutes = (now - goal.since).total_seconds() / 60
+                unhealthy_minutes = (now - since_dt).total_seconds() / 60
                 if unhealthy_minutes < failure_timeout:
                     logger.debug(
-                        "principal unit %s: unhealthy for %.1f min, "
+                        "unit %s: unhealthy for %.1f min, "
                         "waiting for failure-timeout (%d min)",
                         unit_name, unhealthy_minutes, failure_timeout,
                     )
@@ -189,7 +373,6 @@ class JaimeCharm(CharmBase):
                     )
                     continue
 
-                # --- Cooldown: incident already open ---
                 last_reported_iso = self._status_tracker.last_reported(unit_name)
                 if last_reported_iso:
                     last_reported_dt = datetime.datetime.fromisoformat(last_reported_iso)
@@ -208,14 +391,12 @@ class JaimeCharm(CharmBase):
                             "timestamp": now.isoformat(),
                         }))
                         short_id = (incident_dict or {}).get("id", "")[:8]
-                        # Preserve BlockedStatus if a provider error was already set.
                         if not isinstance(self.unit.status, BlockedStatus):
                             self.unit.status = ActiveStatus(
                                 f"incident open: {status} ({short_id})"
                             )
                         continue
 
-                # --- Open a new incident ---
                 incident = Incident.open()
                 short_id = incident.id[:8]
                 logger.info(json.dumps({
@@ -240,18 +421,18 @@ class JaimeCharm(CharmBase):
                     "timestamp": now.isoformat(),
                 }, self.model.config.get("audit-log-path", ""))
 
-                # Generate report (context only — input for the LLM)
                 self.unit.status = MaintenanceStatus(
                     f"collecting context: {status} ({short_id})"
                 )
                 log_window = self.model.config.get("log-window-minutes", 30)
                 max_lines = self.model.config.get("max-context-lines", 500)
                 from_dt = datetime.datetime.fromisoformat(since_iso)
-                diagnostics_plan = read_diagnostics_file(self._diagnostics_path)
+                app_name = unit_name.split("/")[0]
+                plan = read_plan_for_app(app_name, self._diagnostics_path)
                 context = collect_context(
                     unit_name, log_window, max_lines,
                     from_time=from_dt,
-                    diagnostics_plan=diagnostics_plan,
+                    diagnostics_plan=plan,
                 )
                 write_event({
                     "event": "context-collected",
@@ -278,21 +459,20 @@ class JaimeCharm(CharmBase):
                 }, self.model.config.get("audit-log-path", ""))
                 logger.info("incident %s: report written to %s", short_id, report_path)
 
-                # Run suggest/act: produce a Suggestion and attach it to the incident
                 with open(report_path) as f:
                     report_content = f.read()
 
                 suggestion = self._run_mode_logic(report_content)
                 if suggestion is not None:
                     self._store_suggestion(unit_name, incident.to_dict(), suggestion)
-                # Only update to active if no provider error was set.
                 if not isinstance(self.unit.status, BlockedStatus):
                     self.unit.status = ActiveStatus(
                         f"incident open: {status} ({short_id})"
                     )
 
-        except Exception as e:
-            logger.warning("could not read principal goal-state: %s", e)
+        # Fallback: if no unit had a readable status, still set Ready.
+        if not status_set and not goal_units:
+            self.unit.status = ActiveStatus("Ready")
 
     def _on_principal_joined(self, event):
         logger.info("principal relation joined: %s", event.relation)
@@ -311,79 +491,43 @@ class JaimeCharm(CharmBase):
         if diagnostics_raw:
             self._apply_diagnostics_config(diagnostics_raw)
         else:
-            self._generate_diagnostics()
+            principal_name = self._get_principal_name()
+            if not principal_name:
+                logger.warning("no principal name available, skipping diagnostics generation")
+                self.unit.status = ActiveStatus("no principal to diagnose")
+                return
+            provider = self._get_ai_provider()
+            ensure_plan_for_app(principal_name, self._diagnostics_path, provider)
+            self.unit.status = ActiveStatus("Ready")
 
     def _apply_diagnostics_config(self, diagnostics_raw):
         try:
-            plan = json.loads(diagnostics_raw)
+            data = json.loads(diagnostics_raw)
         except json.JSONDecodeError as e:
             logger.error("diagnostics config is not valid JSON: %s", e)
             self.unit.status = BlockedStatus("invalid diagnostics config (not JSON)")
             return
 
-        errors = validate_diagnostics(plan)
+        if not isinstance(data, dict):
+            logger.error("diagnostics config must be a JSON object")
+            self.unit.status = BlockedStatus("invalid diagnostics config (not an object)")
+            return
+
+        # Accept either a single monitoring plan or a full multi-plan file.
+        if "plans" not in data and "principal_name" not in data:
+            data = {
+                "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "plans": {"default": data},
+            }
+
+        errors = validate_monitoring_plan(next(iter(data.get("plans", {}).values()), make_empty_plan()))
         if errors:
             logger.error("diagnostics config validation failed: %s", errors)
             self.unit.status = BlockedStatus(f"invalid diagnostics config: {errors[0]}")
             return
 
-        write_diagnostics_file(plan, self._diagnostics_path)
+        write_diagnostics_file(data, self._diagnostics_path)
         logger.info("monitoring plan written to %s", self._diagnostics_path)
-        self.unit.status = ActiveStatus("Ready")
-
-    def _generate_diagnostics(self):
-        principal_name = self._get_principal_name()
-        if not principal_name:
-            logger.warning("no principal name available, skipping diagnostics generation")
-            self.unit.status = ActiveStatus("no principal to diagnose")
-            return
-
-        provider = self._get_ai_provider()
-        if provider is None:
-            logger.info("no AI provider configured, writing empty monitoring plan")
-            plan = make_empty_plan(principal_name)
-            write_diagnostics_file(plan, self._diagnostics_path)
-            self.unit.status = ActiveStatus("Ready")
-            return
-
-        logger.info("generating diagnostics plan for '%s' via %s", principal_name, self.model.config.get("provider"))
-        try:
-            prompt = build_prompt(principal_name)
-            response = provider.generate(prompt)
-            logger.info("Diagnostics plan generated successfully via %s", self.model.config.get("provider"))
-            logger.debug("Diagnostics plan AI response:\n%s", response)
-
-            # Gemini may wrap the JSON in markdown fences despite being asked not to.
-            # Strip ```json ... ``` or ``` ... ``` blocks if present.
-            stripped = response.strip()
-            if stripped.startswith("```"):
-                lines = stripped.splitlines()
-                inner = "\n".join(lines[1:-1]) if lines[-1].strip() == "```" else "\n".join(lines[1:])
-                stripped = inner.strip()
-
-            if not stripped:
-                raise ValueError("AI provider returned an empty response")
-
-            plan = json.loads(stripped)
-            plan["generated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        except Exception as e:
-            logger.error("Diagnostics plan generation via %s failed: %s — falling back to empty plan",
-                         self.model.config.get("provider"), e)
-            plan = make_empty_plan(principal_name)
-            write_diagnostics_file(plan, self._diagnostics_path)
-            self.unit.status = ActiveStatus("Ready")
-            return
-
-        errors = validate_diagnostics(plan)
-        if errors:
-            logger.error("AI generated invalid monitoring plan: %s — falling back to empty plan", errors)
-            plan = make_empty_plan(principal_name)
-            write_diagnostics_file(plan, self._diagnostics_path)
-            self.unit.status = ActiveStatus("Ready")
-            return
-
-        write_diagnostics_file(plan, self._diagnostics_path)
-        logger.info("AI-generated monitoring plan written to %s", self._diagnostics_path)
         self.unit.status = ActiveStatus("Ready")
 
     def _get_principal_name(self):
@@ -524,11 +668,12 @@ class JaimeCharm(CharmBase):
         log_window = self.model.config.get("log-window-minutes", 30)
         max_lines = self.model.config.get("max-context-lines", 500)
         report_dir = self.model.config.get("report-dir", "")
-        diagnostics_plan = read_diagnostics_file(self._diagnostics_path)
+        app_name = unit_name.split("/")[0]
+        plan = read_plan_for_app(app_name, self._diagnostics_path)
 
         context = collect_context(
             unit_name, log_window, max_lines,
-            diagnostics_plan=diagnostics_plan,
+            diagnostics_plan=plan,
         )
         report_path = generate_report(
             incident_id=incident_id,
