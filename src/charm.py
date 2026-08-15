@@ -34,7 +34,7 @@ from jaime.diagnostics import (
     make_empty_plan,
 )
 from jaime.principal import StatusTracker
-from jaime.incident import Incident, Suggestion
+from jaime.incident import Incident, Suggestion, UsageMetadata
 from jaime.collector import collect_context
 from jaime.report import generate_report
 from jaime.logging import write_event
@@ -63,6 +63,7 @@ class JaimeCharm(CharmBase):
         self.framework.observe(self.on.generate_report_action, self._on_action_generate_report)
         self.framework.observe(self.on.get_suggestion_action, self._on_action_get_suggestion)
         self.framework.observe(self.on.show_status_action, self._on_action_show_status)
+        self.framework.observe(self.on.show_usage_action, self._on_action_show_usage)
         self.framework.observe(self.on.reset_action, self._on_action_reset)
 
     def _on_config_changed(self, event):
@@ -446,6 +447,15 @@ class JaimeCharm(CharmBase):
             self.unit.status = BlockedStatus(provider_err)
             return None
 
+        # Validate the token before attempting a potentially expensive
+        # generation call. This catches stale or wrong tokens at incident
+        # time rather than after collecting context and writing a report.
+        err = provider.check()
+        if err:
+            logger.error("AI provider token check failed before generation: %s", err)
+            self.unit.status = BlockedStatus(f"AI provider error: {err[:100]}")
+            return None
+
         try:
             if mode == Mode.SUGGEST:
                 return run_suggest(provider, report_content, additional_context)
@@ -470,17 +480,34 @@ class JaimeCharm(CharmBase):
 
     def _store_suggestion(self, unit_name: str, incident_dict: dict,
                           suggestion: "Suggestion") -> "Suggestion":
-        """Attach a suggestion to the incident and persist it."""
+        """Attach a suggestion to the incident, persist it, and record token usage."""
         updated = Incident.from_dict(incident_dict).attach_suggestion(suggestion)
         self._status_tracker.update_incident(unit_name, updated.to_dict())
-        write_event({
+
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        audit_path = self.model.config.get("audit-log-path", "")
+
+        # Build the audit event, including usage if available.
+        audit_event = {
             "event": "suggestion-generated",
             "unit": unit_name,
             "incident_id": incident_dict["id"],
             "commands": list(suggestion.commands),
             "mode": self.model.config.get("mode", Mode.OBSERVE.value),
-            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        }, self.model.config.get("audit-log-path", ""))
+            "timestamp": now,
+        }
+        if suggestion.usage is not None:
+            audit_event["usage"] = suggestion.usage.to_dict()
+
+        write_event(audit_event, audit_path)
+
+        # Store usage in the tracker for show-usage queries.
+        if suggestion.usage is not None:
+            usage_entry = suggestion.usage.to_dict()
+            usage_entry["incident_id"] = incident_dict["id"]
+            usage_entry["timestamp"] = now
+            self._status_tracker.record_usage(unit_name, usage_entry)
+
         return suggestion
 
     def _get_ai_provider(self):
@@ -613,22 +640,40 @@ class JaimeCharm(CharmBase):
         additional_context = event.params.get("additional-context", "")
         context_hash = hashlib.sha256(additional_context.encode()).hexdigest() if additional_context else ""
 
+        # Determine the currently configured model so we can invalidate the
+        # cache when the operator changes provider or model.
+        current_provider = self.model.config.get("provider", "none")
+        current_model = (
+            self.model.config.get("model", "") or self._default_model(current_provider)
+        )
+
         for unit_name, entry in self._status_tracker._state.items():
             inc = entry.get("incident")
             if inc and inc.get("closed_at") is None:
                 suggestion = inc.get("suggestion")
                 if suggestion:
                     stored_hash = suggestion.get("context_hash", "")
-                    if not additional_context or context_hash == stored_hash:
-                        event.set_results({
+                    stored_model = (suggestion.get("usage") or {}).get("model", "")
+                    model_changed = stored_model and stored_model != current_model
+                    if not model_changed and (not additional_context or context_hash == stored_hash):
+                        results = {
                             "incident-id": inc["id"],
                             "description": suggestion["description"],
                             "commands": "\n".join(suggestion["commands"]),
                             "command-count": len(suggestion["commands"]),
                             "generated-at": suggestion["generated_at"],
-                        })
+                            "cached": "true",
+                        }
+                        event.set_results(results)
                         return
-                    # Hash differs: fall through to regenerate
+                    # Cache miss: log the reason before falling through to regenerate.
+                    if model_changed:
+                        logger.info(
+                            "model changed from '%s' to '%s' — regenerating suggestion",
+                            stored_model, current_model,
+                        )
+                    else:
+                        logger.info("additional-context hash differs — regenerating suggestion")
 
                 mode = Mode(self.model.config.get("mode", Mode.OBSERVE))
                 if mode == Mode.OBSERVE:
@@ -650,13 +695,22 @@ class JaimeCharm(CharmBase):
                     return
 
                 self._store_suggestion(unit_name, inc, suggestion)
-                event.set_results({
+                results = {
                     "incident-id": inc["id"],
                     "description": suggestion.description,
                     "commands": "\n".join(suggestion.commands),
                     "command-count": len(suggestion.commands),
                     "generated-at": suggestion.generated_at,
-                })
+                    "cached": "false",
+                }
+                if suggestion.usage is not None:
+                    results["model"] = suggestion.usage.model
+                    results["prompt-tokens"] = str(suggestion.usage.prompt_tokens)
+                    results["completion-tokens"] = str(suggestion.usage.completion_tokens)
+                    results["total-tokens"] = str(suggestion.usage.total_tokens)
+                    if suggestion.usage.cost_usd is not None:
+                        results["cost-usd"] = f"{suggestion.usage.cost_usd:.6f}"
+                event.set_results(results)
                 return
 
         event.fail("no open incident found")
@@ -680,6 +734,72 @@ class JaimeCharm(CharmBase):
                 "incident-opened-at": (entry.get("incident") or {}).get("opened_at", ""),
             })
         event.set_results(results)
+
+    def _on_action_show_usage(self, event):
+        """Return AI token usage summary, globally or filtered by incident-id."""
+        logger.info("show-usage action invoked")
+        incident_id = event.params.get("incident-id", "").strip()
+
+        all_entries = self._status_tracker.all_usage_log()
+
+        if not all_entries:
+            event.set_results({"result": json.dumps({"message": "no usage recorded yet"}, indent=2)})
+            return
+
+        if incident_id:
+            entries = [e for e in all_entries if e.get("incident_id") == incident_id]
+            if not entries:
+                event.fail(f"no usage found for incident {incident_id}")
+                return
+            summary = self._summarise_usage(entries)
+            summary["incident_id"] = incident_id
+        else:
+            summary = self._summarise_usage(all_entries)
+            summary["total_incidents"] = len({e.get("incident_id") for e in all_entries})
+            summary["total_calls"] = len(all_entries)
+
+        event.set_results({"result": json.dumps(summary, indent=2)})
+
+    @staticmethod
+    def _summarise_usage(entries: list[dict]) -> dict:
+        """Aggregate a list of usage log entries into a summary dict with per-model breakdown."""
+        prompt_tokens = sum(e.get("prompt_tokens", 0) for e in entries)
+        completion_tokens = sum(e.get("completion_tokens", 0) for e in entries)
+        total_tokens = sum(e.get("total_tokens", 0) for e in entries)
+        costs = [e["cost_usd"] for e in entries if e.get("cost_usd") is not None]
+
+        # Per-model breakdown.
+        by_model = {}
+        for e in entries:
+            model = e.get("model") or "unknown"
+            if model not in by_model:
+                by_model[model] = {
+                    "calls": 0,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                    "cost_usd": None,
+                }
+            m = by_model[model]
+            m["calls"] += 1
+            m["prompt_tokens"] += e.get("prompt_tokens", 0)
+            m["completion_tokens"] += e.get("completion_tokens", 0)
+            m["total_tokens"] += e.get("total_tokens", 0)
+            if e.get("cost_usd") is not None:
+                m["cost_usd"] = (m["cost_usd"] or 0.0) + e["cost_usd"]
+
+        # Round per-model costs to 6 decimal places.
+        for m in by_model.values():
+            if m["cost_usd"] is not None:
+                m["cost_usd"] = round(m["cost_usd"], 6)
+
+        return {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            "cost_usd": round(sum(costs), 6) if costs else None,
+            "by_model": by_model,
+        }
 
     def _on_action_reset(self, event):
         """Close any open incidents, clear all status state, and return to Ready."""

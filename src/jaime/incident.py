@@ -6,6 +6,59 @@ import uuid
 
 
 @dataclasses.dataclass(frozen=True)
+class UsageMetadata:
+    """Token usage and cost metadata from a single LLM call.
+
+    Attributes:
+        prompt_tokens:      Number of tokens in the prompt.
+        completion_tokens:  Number of tokens in the completion.
+        total_tokens:       Total tokens (prompt + completion).
+        cost_usd:           Cost in USD as reported by the provider, or None if unavailable.
+        model:              Model name used for this call.
+    """
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cost_usd: float | None = None
+    model: str = ""
+
+    def to_dict(self) -> dict:
+        d = {
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "total_tokens": self.total_tokens,
+            "model": self.model,
+        }
+        if self.cost_usd is not None:
+            d["cost_usd"] = self.cost_usd
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "UsageMetadata":
+        return cls(
+            prompt_tokens=d.get("prompt_tokens", 0),
+            completion_tokens=d.get("completion_tokens", 0),
+            total_tokens=d.get("total_tokens", 0),
+            cost_usd=d.get("cost_usd"),
+            model=d.get("model", ""),
+        )
+
+    def __add__(self, other: "UsageMetadata") -> "UsageMetadata":
+        """Sum two UsageMetadata instances (for aggregating across calls)."""
+        cost = None
+        if self.cost_usd is not None or other.cost_usd is not None:
+            cost = (self.cost_usd or 0.0) + (other.cost_usd or 0.0)
+        return UsageMetadata(
+            prompt_tokens=self.prompt_tokens + other.prompt_tokens,
+            completion_tokens=self.completion_tokens + other.completion_tokens,
+            total_tokens=self.total_tokens + other.total_tokens,
+            cost_usd=cost,
+            model=self.model or other.model,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
 class Suggestion:
     """An AI-generated suggestion attached to an incident.
 
@@ -14,39 +67,50 @@ class Suggestion:
         commands:      Commands parsed from the LLM response.
         generated_at:  ISO 8601 timestamp (UTC) when the suggestion was created.
         context_hash:  SHA-256 of the additional-context string, or empty if none.
+        usage:         Token usage and cost metadata from the LLM call, or None.
     """
 
     description: str
     commands: tuple[str, ...]
     generated_at: str
     context_hash: str = ""
+    usage: UsageMetadata | None = None
 
     @classmethod
     def from_llm(cls, description: str, commands: list[str],
-                 context_hash: str = "") -> "Suggestion":
+                 context_hash: str = "",
+                 usage: UsageMetadata | None = None) -> "Suggestion":
         """Create a Suggestion from LLM output."""
         return cls(
             description=description,
             commands=tuple(commands),
             generated_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
             context_hash=context_hash,
+            usage=usage,
         )
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "description": self.description,
             "commands": list(self.commands),
             "generated_at": self.generated_at,
             "context_hash": self.context_hash,
         }
+        if self.usage is not None:
+            d["usage"] = self.usage.to_dict()
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "Suggestion":
+        usage = None
+        if "usage" in d:
+            usage = UsageMetadata.from_dict(d["usage"])
         return cls(
             description=d["description"],
             commands=tuple(d.get("commands", [])),
             generated_at=d["generated_at"],
             context_hash=d.get("context_hash", ""),
+            usage=usage,
         )
 
 

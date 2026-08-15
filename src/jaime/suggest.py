@@ -14,7 +14,7 @@ import re
 import shlex
 import subprocess
 
-from jaime.incident import Suggestion
+from jaime.incident import Suggestion, UsageMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +111,7 @@ def run_suggest(provider, report_content: str,
     if provider is None:
         return None
     prompt = build_suggest_prompt(report_content, additional_context)
-    llm_response = provider.generate(prompt)
+    llm_response, usage = provider.generate(prompt)
     logger.info("AI provider returned suggestion successfully")
     logger.debug("AI provider suggestion response:\n%s", llm_response)
     commands = parse_commands(llm_response)
@@ -120,6 +120,7 @@ def run_suggest(provider, report_content: str,
         description=llm_response,
         commands=commands,
         context_hash=context_hash,
+        usage=usage,
     )
 
 

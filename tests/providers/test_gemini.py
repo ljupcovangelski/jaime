@@ -4,6 +4,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from jaime.providers.gemini import GeminiProvider
+from jaime.incident import UsageMetadata
 
 
 def _mock_urlopen_response(data_bytes):
@@ -31,14 +32,42 @@ class TestGeminiProvider:
         payload = json.dumps({
             "candidates": [
                 {"content": {"parts": [{"text": "Hello from Gemini"}]}}
-            ]
+            ],
+            "usageMetadata": {
+                "promptTokenCount": 10,
+                "candidatesTokenCount": 5,
+                "totalTokenCount": 15,
+            },
         }).encode()
         mock_urlopen.return_value = _mock_urlopen_response(payload)
 
         provider = GeminiProvider("test-token")
-        result = provider.generate("say hello")
+        text, usage = provider.generate("say hello")
 
-        assert result == "Hello from Gemini"
+        assert text == "Hello from Gemini"
+        assert isinstance(usage, UsageMetadata)
+        assert usage.prompt_tokens == 10
+        assert usage.completion_tokens == 5
+        assert usage.total_tokens == 15
+        assert usage.cost_usd is None
+        assert usage.model == "gemini-2.0-flash"
+
+    @patch("jaime.providers.gemini.urllib.request.urlopen")
+    def test_generate_missing_usage_metadata_returns_zeros(self, mock_urlopen):
+        """When usageMetadata is absent, usage fields default to zero."""
+        payload = json.dumps({
+            "candidates": [
+                {"content": {"parts": [{"text": "Hello"}]}}
+            ],
+        }).encode()
+        mock_urlopen.return_value = _mock_urlopen_response(payload)
+
+        provider = GeminiProvider("test-token")
+        text, usage = provider.generate("say hello")
+
+        assert text == "Hello"
+        assert usage.prompt_tokens == 0
+        assert usage.total_tokens == 0
 
     @patch("jaime.providers.gemini.urllib.request.urlopen")
     def test_generate_no_candidates_raises(self, mock_urlopen):
@@ -87,3 +116,4 @@ class TestGeminiProvider:
         provider = GeminiProvider("test-token")
         with pytest.raises(urllib.error.URLError):
             provider.generate("test")
+

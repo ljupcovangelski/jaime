@@ -40,18 +40,16 @@ def generate_report(
 
     _append(lines, [
         "# Incident Report",
-        "",
-        "| Field | Value |",
-        "|---|---|",
-        f"| Incident ID | `{incident_id}` |",
-        f"| Unit | `{unit_name}` |",
-        f"| Workload status | `{workload}` |",
-        f"| First seen | `{first_seen}` |",
-        f"| Report generated | `{now}` |",
+        f"- incident: {incident_id}",
+        f"- unit: {unit_name}",
+        f"- status: {workload}",
+        f"- first-seen: {first_seen}",
+        f"- generated: {now}",
     ])
 
     plan_results = context.get("plan_results", {})
 
+    _append_section_summary(lines, workload, context, plan_results)
     _append_section_network(lines, plan_results)
     _append_section_ss_connections(lines, context)
     _append_section_firewall_rules(lines, context)
@@ -82,6 +80,51 @@ def generate_report(
 # ---------------------------------------------------------------------------
 # Per-section append helpers
 # ---------------------------------------------------------------------------
+
+
+def _append_section_summary(lines: list[str], workload: str,
+                             context: dict, plan_results: dict) -> None:
+    """Compact executive summary — highest-signal content first.
+
+    Surfaces error/warning log lines and explicitly-set config options
+    so the LLM can form a diagnosis before reading the full detail sections.
+    """
+    summary = ["## Executive summary", f"Unit is in **{workload}** state."]
+
+    # Most recent error/warning log lines (up to 10).
+    unit_logs = context.get("unit_logs", [])
+    error_lines = [
+        l for l in unit_logs
+        if "ERROR" in l.upper() or "WARNING" in l.upper()
+    ][-10:]
+    if error_lines:
+        summary.append("")
+        summary.append("**Recent errors/warnings:**")
+        summary.append("```")
+        summary.extend(error_lines)
+        summary.append("```")
+
+    # Charm config options that are explicitly set (non-empty, non-False).
+    charm_config = context.get("charm_config", {})
+    config_yaml = charm_config.get("config_yaml", "")
+    if config_yaml:
+        try:
+            parsed = yaml.safe_load(config_yaml)
+            options = (parsed or {}).get("options", {})
+            set_options = {
+                k: v.get("default")
+                for k, v in options.items()
+                if v.get("default") not in (None, "", False, "False", "false")
+            }
+            if set_options:
+                summary.append("")
+                summary.append("**Explicitly enabled config options:**")
+                for k, v in sorted(set_options.items()):
+                    summary.append(f"- `{k}`: `{v}`")
+        except Exception:
+            pass
+
+    _append(lines, summary)
 
 
 def _append_section_log_files(lines: list[str], plan_results: dict) -> None:
@@ -229,7 +272,6 @@ def _append_section_charm_config(lines: list[str], context: dict) -> None:
         return
 
     _append(lines, ["## Charm config"])
-
     for key, opt in sorted(options.items()):
         default = opt.get("default", "")
         _append(lines, [f"- `{key}`: `{default}`"])
@@ -239,7 +281,10 @@ def _append_section_disk(lines: list[str], context: dict) -> None:
     disk = context.get("disk_usage", [])
     _append(lines, ["## Disk usage"])
     if disk:
-        _append(lines, ["```", *disk, "```"])
+        # Filter out snap mount lines — they always show 100% and are not
+        # relevant to workload disk health.
+        filtered = [l for l in disk if "/snap/" not in l]
+        _append(lines, ["```", *filtered, "```"])
     else:
         _append(lines, ["_Not available._"])
 
@@ -247,10 +292,32 @@ def _append_section_disk(lines: list[str], context: dict) -> None:
 def _append_section_memory(lines: list[str], context: dict) -> None:
     memory = context.get("memory_summary", [])
     _append(lines, ["## Memory"])
-    if memory:
-        _append(lines, ["```", *memory, "```"])
-    else:
+    if not memory:
         _append(lines, ["_Not available._"])
+        return
+
+    # Parse `free -h` output into compact single lines per row.
+    # Format: "Mem:  total  used  free  shared  buff/cache  available"
+    summary_lines = []
+    for line in memory:
+        parts = line.split()
+        if not parts:
+            continue
+        label = parts[0].rstrip(":")
+        if label in ("Mem", "Swap") and len(parts) >= 3:
+            total = parts[1]
+            used = parts[2]
+            available = parts[6] if label == "Mem" and len(parts) >= 7 else parts[3]
+            if label == "Mem":
+                summary_lines.append(f"RAM: {used} used / {total} total ({available} available)")
+            else:
+                summary_lines.append(f"Swap: {used} used / {total} total")
+
+    if summary_lines:
+        _append(lines, summary_lines)
+    else:
+        # Fallback to raw output if parsing failed.
+        _append(lines, ["```", *memory, "```"])
 
 
 def _append_section_logs(lines: list[str], context: dict) -> None:

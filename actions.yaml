@@ -17,6 +17,13 @@ get-suggestion:
 show-status:
   description: "Show the current monitoring state: principal unit workload, active incident if any, and last observation."
   params: {}
+show-usage:
+  description: "Show AI token usage and cost. Returns a global summary across all incidents, or per-incident detail if incident-id is provided."
+  params:
+    incident-id:
+      type: string
+      default: ""
+      description: "Incident ID to filter by. If empty, returns the global summary."
 reset:
   description: "Clear all tracked incidents and status state. Use to start fresh after a resolved incident."
   params: {}

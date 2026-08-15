@@ -7,6 +7,7 @@ import urllib.request
 import urllib.error
 
 from jaime.providers.base import AIProvider
+from jaime.incident import UsageMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ class GeminiProvider(AIProvider):
             logger.warning("Gemini check failed:\n%s", traceback.format_exc())
             return f"Gemini connection error: {e}"
 
-    def generate(self, prompt: str) -> str:
+    def generate(self, prompt: str) -> tuple[str, UsageMetadata]:
         url = f"{GEMINI_API_BASE}/{self._model}:generateContent"
         payload = json.dumps({
             "contents": [{"parts": [{"text": prompt}]}],
@@ -75,4 +76,16 @@ class GeminiProvider(AIProvider):
         if not parts:
             raise RuntimeError(f"Gemini response has no parts: {candidates[0]}")
 
-        return parts[0].get("text", "")
+        text = parts[0].get("text", "")
+
+        # Extract token usage from usageMetadata if present.
+        raw_usage = result.get("usageMetadata", {})
+        usage = UsageMetadata(
+            prompt_tokens=raw_usage.get("promptTokenCount", 0),
+            completion_tokens=raw_usage.get("candidatesTokenCount", 0),
+            total_tokens=raw_usage.get("totalTokenCount", 0),
+            cost_usd=None,  # Gemini does not report cost in the response.
+            model=self._model,
+        )
+
+        return text, usage
