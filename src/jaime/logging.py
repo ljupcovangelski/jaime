@@ -21,7 +21,7 @@ def write_event(event: dict, audit_log_path: str = "") -> None:
     """
     path = audit_log_path or _DEFAULT_AUDIT_LOG_PATH
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         with open(path, "a") as f:
             f.write(json.dumps(event) + "\n")
     except Exception as e:

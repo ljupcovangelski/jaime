@@ -19,7 +19,13 @@ options:
     default: ""
   api-token:
     type: string
-    description: "Reference to Juju secret containing the provider API token. Must not be logged."
+    description: >
+      API token for the configured AI provider. Accepts either a Juju secret URI
+      (``secret:<id>``, recommended) or a plain token string (for development only).
+      When a secret URI is provided, Jaime reads the ``token`` field from the secret
+      content. The token is never logged. To use a secret: run
+      ``juju add-secret jaime-token token=<value>``, grant it to the application,
+      then set this field to the returned secret URI.
     default: ""
   watch-statuses:
     type: string
@@ -36,7 +42,7 @@ options:
   log-window-minutes:
     type: int
     description: "How far back Jaime should collect recent logs (minutes)."
-    default: 120
+    default: 30
   max-context-lines:
     type: int
     description: "Maximum number of log/context lines to include in a report context bundle."

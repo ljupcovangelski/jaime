@@ -7,6 +7,20 @@ import logging
 import os
 import datetime
 import traceback
+from enum import Enum
+
+
+class Mode(str, Enum):
+    OBSERVE = "observe"
+    SUGGEST = "suggest"
+    ACT = "act"
+
+
+class Provider(str, Enum):
+    NONE = "none"
+    GEMINI = "gemini"
+    OPENROUTER = "openrouter"
+
 
 from ops.charm import CharmBase
 from ops.main import main
@@ -25,6 +39,7 @@ from jaime.collector import collect_context
 from jaime.report import generate_report
 from jaime.logging import write_event
 from jaime.suggest import run_suggest, run_act
+from ops.hookcmds import goal_state
 
 logger = logging.getLogger(__name__)
 
@@ -51,23 +66,40 @@ class JaimeCharm(CharmBase):
         self.framework.observe(self.on.reset_action, self._on_action_reset)
 
     def _on_config_changed(self, event):
-        """Validate AI provider connectivity on config change."""
-        mode = self.model.config.get("mode", "observe")
-        if mode not in ("suggest", "act"):
-            return
-
-        provider = self._get_ai_provider()
-        if provider is None:
+        """Validate config and AI provider connectivity on config change."""
+        try:
+            mode = Mode(self.model.config.get("mode", Mode.OBSERVE))
+        except ValueError:
+            valid = ", ".join(m.value for m in Mode)
             self.unit.status = BlockedStatus(
-                f"mode={mode} but no AI provider configured"
+                f"invalid mode '{self.model.config.get('mode')}', must be one of: {valid}"
             )
             return
 
-        err = provider.check()
-        if err:
-            logger.error("AI provider connectivity check failed: %s", err)
-            self.unit.status = BlockedStatus(f"AI provider error: {err[:20]}")
+        try:
+            Provider(self.model.config.get("provider", Provider.NONE))
+        except ValueError:
+            valid = ", ".join(p.value for p in Provider)
+            self.unit.status = BlockedStatus(
+                f"invalid provider '{self.model.config.get('provider')}', must be one of: {valid}"
+            )
             return
+
+        # Check the provider token whenever one is configured, regardless of
+        # mode. This gives immediate feedback that the token is valid without
+        # waiting for an incident to fire.
+        provider, provider_err = self._get_ai_provider()
+        if provider is None and mode in (Mode.SUGGEST, Mode.ACT):
+            # In suggest/act a missing provider is a hard blocker.
+            self.unit.status = BlockedStatus(provider_err)
+            return
+
+        if provider is not None:
+            err = provider.check()
+            if err:
+                logger.error("AI provider connectivity check failed: %s", err)
+                self.unit.status = BlockedStatus(f"AI provider error: {err[:100]}")
+                return
 
         self.unit.status = ActiveStatus("Ready")
 
@@ -116,7 +148,6 @@ class JaimeCharm(CharmBase):
                 own_principal_units.add(unit.name)
 
         try:
-            from ops.hookcmds import goal_state
             gs = goal_state()
             principal_relations = gs.relations.get("principal", {})
             for unit_name, goal in principal_relations.items():
@@ -396,24 +427,27 @@ class JaimeCharm(CharmBase):
         return None
 
     def _run_mode_logic(self, report_content: str,
-                        additional_context: str = "") -> "Suggestion | None":
+                        additional_context: str = "") -> Suggestion | None:
         """Run suggest or act logic based on the configured mode.
 
         Returns a Suggestion, or None in observe mode / on error.
         Sets BlockedStatus if the AI provider call fails.
         """
-        mode = self.model.config.get("mode", "observe")
-        if mode not in ("suggest", "act"):
+        try:
+            mode = Mode(self.model.config.get("mode", Mode.OBSERVE))
+        except ValueError:
+            return None
+        if mode not in (Mode.SUGGEST, Mode.ACT):
             return None
 
-        provider = self._get_ai_provider()
+        provider, provider_err = self._get_ai_provider()
         if provider is None:
-            logger.warning("mode is '%s' but no AI provider is configured", mode)
-            self.unit.status = BlockedStatus(f"mode={mode} but no AI provider configured")
+            logger.warning("AI provider unavailable: %s", provider_err)
+            self.unit.status = BlockedStatus(provider_err)
             return None
 
         try:
-            if mode == "suggest":
+            if mode == Mode.SUGGEST:
                 return run_suggest(provider, report_content, additional_context)
 
             # act mode
@@ -429,9 +463,9 @@ class JaimeCharm(CharmBase):
             return suggestion
 
         except Exception as e:
-            logger.error("AI provider call failed in mode '%s': %s", mode,
+            logger.error("AI provider call failed in mode '%s': %s", mode.value,
                          traceback.format_exc())
-            self.unit.status = BlockedStatus(f"AI provider error: {str(e)[:20]}")
+            self.unit.status = BlockedStatus(f"AI provider error: {str(e)[:100]}")
             return None
 
     def _store_suggestion(self, unit_name: str, incident_dict: dict,
@@ -444,36 +478,61 @@ class JaimeCharm(CharmBase):
             "unit": unit_name,
             "incident_id": incident_dict["id"],
             "commands": list(suggestion.commands),
-            "mode": self.model.config.get("mode", "observe"),
+            "mode": self.model.config.get("mode", Mode.OBSERVE.value),
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }, self.model.config.get("audit-log-path", ""))
         return suggestion
 
     def _get_ai_provider(self):
-        provider_name = self.model.config.get("provider", "none")
-        if provider_name == "none":
-            return None
+        try:
+            provider_name = Provider(self.model.config.get("provider", Provider.NONE))
+        except ValueError:
+            return None, f"unsupported provider '{self.model.config.get('provider')}'"
 
-        api_token = self.model.config.get("api-token", "")
+        if provider_name == Provider.NONE:
+            return None, f"mode={self.model.config.get('mode')} but provider is not configured"
+
+        api_token = self._resolve_api_token()
         if not api_token:
-            logger.warning("provider '%s' configured but api-token is empty", provider_name)
-            return None
+            logger.warning("provider '%s' configured but api-token is empty", provider_name.value)
+            return None, f"provider={provider_name.value} but api-token is not set"
 
-        model = self.model.config.get("model", "") or self._default_model(provider_name)
+        model = self.model.config.get("model", "") or self._default_model(provider_name.value)
 
-        if provider_name == "gemini":
+        if provider_name == Provider.GEMINI:
             from jaime.providers.gemini import GeminiProvider
-            return GeminiProvider(api_token, model)
-        elif provider_name == "openrouter":
+            return GeminiProvider(api_token, model), None
+        elif provider_name == Provider.OPENROUTER:
             from jaime.providers.openrouter import OpenRouterProvider
-            return OpenRouterProvider(api_token, model)
+            return OpenRouterProvider(api_token, model), None
 
-        logger.warning("unsupported provider: %s", provider_name)
-        return None
+        return None, f"unsupported provider '{provider_name.value}'"
+
+    def _resolve_api_token(self) -> str:
+        """Resolve the api-token config value.
+
+        If the value looks like a Juju secret URI (``secret:<id>``), fetch the
+        secret content and return the ``token`` field.  Otherwise return the
+        raw config value (plain string token, for convenience in development).
+        The token is never logged.
+        """
+        raw = self.model.config.get("api-token", "")
+        if not raw:
+            return ""
+        if raw.startswith("secret:"):
+            try:
+                secret = self.model.get_secret(id=raw)
+                content = secret.get_content(refresh=True)
+                return content.get("token", "")
+            except Exception as e:
+                logger.warning("could not retrieve api-token secret: %s", e)
+                return ""
+        # Plain token — accepted for development convenience.
+        return raw
 
     @staticmethod
     def _default_model(provider_name):
-        mapping = {"gemini": "gemini-2.5-flash", "openrouter": "deepseek/deepseek-v4-flash"}
+        mapping = {"gemini": "gemini-2.5-flash", "openrouter": "deepseek/deepseek-chat"}
         return mapping.get(provider_name, "")
 
     def _on_action_diagnose(self, event):
@@ -571,8 +630,8 @@ class JaimeCharm(CharmBase):
                         return
                     # Hash differs: fall through to regenerate
 
-                mode = self.model.config.get("mode", "observe")
-                if mode == "observe":
+                mode = Mode(self.model.config.get("mode", Mode.OBSERVE))
+                if mode == Mode.OBSERVE:
                     event.fail("no suggestion available — mode is 'observe'")
                     return
 

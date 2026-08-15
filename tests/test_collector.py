@@ -198,24 +198,49 @@ class TestCollectUnitLogs:
         """Lines within context_window of the last match are included."""
         log_file = tmp_path / "unit-postgresql-0.log"
         now = datetime.datetime.now(datetime.timezone.utc)
+        # Use varied, realistic log messages so _deduplicate_lines does not
+        # collapse them (uniform synthetic messages would share the same
+        # structural pattern after token stripping and trigger deduplication).
+        messages = [
+            "juju.worker started agent loop",
+            "juju.api connected to controller",
+            "juju.worker waiting for lock",
+            "juju.runner dispatching hook install",
+            "juju.state loading charm config",
+            "juju.storage attaching volume",
+            "juju.network interface eth0 up",
+            "juju.worker dispatching hook config-changed",
+            "juju.state writing unit data",
+            "juju.api refreshing credentials",
+            "juju.runner hook config-changed finished",
+            "juju.worker checking relation data",  # index 11 — outside window
+            "juju.state relation joined postgresql",  # index 12 — inside window
+            "juju.api querying application status",  # index 13 — inside window
+            "juju.worker processing pending events",  # index 14 — inside window
+            "connection to database lost unexpectedly",  # index 15 — ERROR match
+            "juju.runner retrying failed hook",  # index 16 — inside window
+            "juju.state rollback initiated for unit",  # index 17 — inside window
+            "juju.worker recovery attempt started",  # index 18 — inside window
+            "juju.api notified controller of failure",
+        ]
         lines = []
-        for i in range(20):
+        for i, msg in enumerate(messages):
             ts = (now - datetime.timedelta(minutes=20 - i)).strftime("%Y-%m-%d %H:%M:%S")
             level = "ERROR" if i == 15 else "INFO"
-            lines.append(f"{ts} {level} line {i}")
+            lines.append(f"{ts} {level} {msg}")
         log_file.write_text("\n".join(lines) + "\n")
         import jaime.collector as jcollector
         with mock.patch.object(jcollector, "_JUJU_LOG_DIR", str(tmp_path)):
             result = collect_unit_logs("postgresql/0", log_window_minutes=60, context_window=3)
         # The ERROR at index 15 should be included
-        assert any("ERROR line 15" in l for l in result)
-        # Context window around index 15: indices 12-18, capped to 0-19
-        # So lines at indices 12, 13, 14, 16, 17, 18 should also be included
-        assert any("line 12" in l for l in result)
-        assert any("line 14" in l for l in result)
-        assert any("line 16" in l for l in result)
+        assert any("connection to database lost" in l for l in result)
+        # Context window around index 15: indices 12-18
+        assert any("relation joined postgresql" in l for l in result)   # 12
+        assert any("querying application status" in l for l in result)  # 13
+        assert any("processing pending events" in l for l in result)    # 14
+        assert any("retrying failed hook" in l for l in result)         # 16
         # Line at index 11 (outside context_window) should not be included
-        assert not any("line 11" in l for l in result)
+        assert not any("checking relation data" in l for l in result)   # 11
 
     def test_context_window_does_not_exceed_bounds(self, tmp_path):
         """Context window at the start/end of recent lines doesn't go out of bounds."""
@@ -438,6 +463,13 @@ class TestCollectNetworkPorts:
     def test_port_not_listening(self):
         with mock.patch("jaime.collector._run", return_value="tcp LISTEN 0 128 0.0.0.0:80"):
             result = jcollector._collect_network_ports([{"port": 5432, "protocol": "tcp"}])
+        assert result[0]["status"] == "not_listening"
+
+    def test_port_no_false_positive_on_substring_match(self):
+        """Port 80 must not match 8080, 8000, or 54320 in the ss output."""
+        output = "tcp LISTEN 0 128 0.0.0.0:8080\ntcp LISTEN 0 128 0.0.0.0:8000\ntcp LISTEN 0 128 0.0.0.0:54320"
+        with mock.patch("jaime.collector._run", return_value=output):
+            result = jcollector._collect_network_ports([{"port": 80, "protocol": "tcp"}])
         assert result[0]["status"] == "not_listening"
 
 

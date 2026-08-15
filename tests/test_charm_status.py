@@ -1,8 +1,8 @@
 """Unit tests for _log_principal_status in JaimeCharm."""
 
 from ops.testing import Harness
-from ops.model import ActiveStatus, MaintenanceStatus, WaitingStatus
-from charm import JaimeCharm
+from ops.model import ActiveStatus, BlockedStatus, MaintenanceStatus, WaitingStatus
+from charm import JaimeCharm, Mode, Provider
 from jaime.principal import StatusTracker
 
 import datetime
@@ -84,7 +84,7 @@ def call_log_status(harness, goal_relations, now):
     charm_logger.setLevel(logging.DEBUG)
 
     try:
-        with mock.patch("ops.hookcmds.goal_state", return_value=gs), \
+        with mock.patch("charm.goal_state", return_value=gs), \
              mock.patch("charm.datetime") as mock_dt, \
              mock.patch("charm.collect_context", return_value={}), \
              mock.patch("charm.generate_report", return_value="/tmp/test-report.md"), \
@@ -351,3 +351,85 @@ class TestGoalStateError:
             charm_logger.removeHandler(handler)
 
         assert any("could not read principal goal-state" in r.getMessage() for r in log_records)
+
+
+class TestConfigChanged:
+    """Tests for _on_config_changed validation behaviour."""
+
+    def _make_harness(self, config_overrides=None):
+        cfg = {**_DEFAULT_CONFIG, **(config_overrides or {})}
+        with mock.patch.object(JaimeCharm, "_ensure_diagnostics"):
+            h = Harness(JaimeCharm)
+            h.begin()
+            # update_config fires config-changed, which is where validation runs.
+            # Patch _ensure_diagnostics for the duration of the config update too.
+            with mock.patch.object(h.charm, "_ensure_diagnostics"):
+                h.update_config(cfg)
+        return h
+
+    def test_invalid_mode_sets_blocked(self):
+        h = self._make_harness({"mode": "diagnose"})
+        assert isinstance(h.charm.unit.status, BlockedStatus)
+        assert "invalid mode 'diagnose'" in h.charm.unit.status.message
+        assert "observe, suggest, act" in h.charm.unit.status.message
+
+    def test_observe_mode_sets_active(self):
+        h = self._make_harness({"mode": "observe"})
+        assert isinstance(h.charm.unit.status, ActiveStatus)
+
+    def test_suggest_mode_no_provider_sets_blocked(self):
+        h = self._make_harness({"mode": "suggest", "provider": "none"})
+        assert isinstance(h.charm.unit.status, BlockedStatus)
+        assert "provider is not configured" in h.charm.unit.status.message
+
+    def test_suggest_mode_provider_set_no_token_sets_blocked(self):
+        h = self._make_harness({"mode": "suggest", "provider": "gemini", "api-token": ""})
+        assert isinstance(h.charm.unit.status, BlockedStatus)
+        assert "api-token is not set" in h.charm.unit.status.message
+
+    def test_suggest_mode_valid_provider_sets_active(self):
+        h = self._make_harness({"mode": "suggest", "provider": "gemini", "api-token": "mytoken"})
+        mock_provider = mock.MagicMock()
+        mock_provider.check.return_value = None
+        with mock.patch.object(h.charm, "_get_ai_provider", return_value=(mock_provider, None)):
+            h.charm._on_config_changed(mock.MagicMock())
+        assert isinstance(h.charm.unit.status, ActiveStatus)
+
+    def test_suggest_mode_provider_check_fails_sets_blocked(self):
+        h = self._make_harness({"mode": "suggest", "provider": "gemini", "api-token": "mytoken"})
+        mock_provider = mock.MagicMock()
+        mock_provider.check.return_value = "HTTP 401: Unauthorized"
+        with mock.patch.object(h.charm, "_get_ai_provider", return_value=(mock_provider, None)):
+            h.charm._on_config_changed(mock.MagicMock())
+        assert isinstance(h.charm.unit.status, BlockedStatus)
+        assert "AI provider error" in h.charm.unit.status.message
+
+    def test_act_mode_no_token_sets_blocked(self):
+        h = self._make_harness({"mode": "act", "provider": "openrouter", "api-token": ""})
+        assert isinstance(h.charm.unit.status, BlockedStatus)
+        assert "api-token is not set" in h.charm.unit.status.message
+
+    def test_invalid_provider_sets_blocked(self):
+        h = self._make_harness({"mode": "observe", "provider": "foobar"})
+        assert isinstance(h.charm.unit.status, BlockedStatus)
+        assert "invalid provider 'foobar'" in h.charm.unit.status.message
+        assert "none, gemini, openrouter" in h.charm.unit.status.message
+
+    def test_observe_mode_with_provider_and_valid_token_sets_active(self):
+        """In observe mode, a configured provider token is still validated eagerly."""
+        h = self._make_harness({"mode": "observe", "provider": "gemini", "api-token": "mytoken"})
+        mock_provider = mock.MagicMock()
+        mock_provider.check.return_value = None
+        with mock.patch.object(h.charm, "_get_ai_provider", return_value=(mock_provider, None)):
+            h.charm._on_config_changed(mock.MagicMock())
+        assert isinstance(h.charm.unit.status, ActiveStatus)
+
+    def test_observe_mode_with_provider_and_bad_token_sets_blocked(self):
+        """In observe mode, a bad token is caught immediately rather than at incident time."""
+        h = self._make_harness({"mode": "observe", "provider": "gemini", "api-token": "badtoken"})
+        mock_provider = mock.MagicMock()
+        mock_provider.check.return_value = "HTTP 401: API key not valid"
+        with mock.patch.object(h.charm, "_get_ai_provider", return_value=(mock_provider, None)):
+            h.charm._on_config_changed(mock.MagicMock())
+        assert isinstance(h.charm.unit.status, BlockedStatus)
+        assert "AI provider error" in h.charm.unit.status.message

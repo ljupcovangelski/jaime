@@ -78,25 +78,38 @@ For phase-1 this may be unused if `provider=none`.
 
 ## `api-token`
 
-A Juju secret reference containing the AI provider token.
+The API token for the configured AI provider. The recommended approach is to
+store the token as a Juju secret so it is never exposed in `juju config` output
+or operator logs.
 
-The token must never be written to:
-
-- Juju logs
-- JSONL audit logs
-- Markdown reports
-- prompts saved for debugging
-- unit test fixtures
-
-Example intent:
+**Recommended — Juju secret (production):**
 
 ```bash
-juju add-secret jaime-ai-token token=<TOKEN>
-juju grant-secret jaime-ai-token jaime
-juju config jaime api-token=<SECRET-ID-OR-REFERENCE>
+# Store the token once
+SECRET_URI=$(juju add-secret jaime-token token=<TOKEN>)
+
+# Grant access to the application
+juju grant-secret jaime-token jaime
+
+# Set the config to the secret URI
+juju config jaime api-token="${SECRET_URI}"
 ```
 
-Exact secret wiring may change during implementation.
+Jaime reads the `token` field from the secret content. The secret URI starts
+with `secret:` and is safe to store in config.
+
+**Development only — plain string:**
+
+```bash
+juju config jaime api-token="<TOKEN>"
+```
+
+Plain strings are accepted for convenience during local development, but the
+token will be visible in `juju config jaime` output. Do not use this in
+production.
+
+The token is never written to Juju logs, JSONL audit logs, Markdown reports,
+or AI prompts.
 
 ## `watch-statuses`
 
