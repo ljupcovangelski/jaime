@@ -97,7 +97,9 @@ def validate_diagnostics(plan):
 
     mp = plan.get("monitoring_plan")
     if not isinstance(mp, dict):
-        if "monitoring_plan" not in [e.split("'")[1] for e in errors if "monitoring_plan" in e]:
+        # Only add a type error when monitoring_plan was present but wrong type;
+        # the missing-field error was already added by the loop above.
+        if "monitoring_plan" in plan:
             errors.append("'monitoring_plan' must be a JSON object")
         return errors
 
@@ -212,7 +214,7 @@ def write_diagnostics_file(plan, path="/var/lib/jaime/diagnostics.json"):
     else:
         plan_obj = plan
 
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, "w") as f:
         json.dump(plan_obj, f, indent=2)
 

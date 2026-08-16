@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import sqlite3
 import subprocess
 
@@ -361,7 +362,9 @@ def _collect_network_ports(plan_ports: list[dict]) -> list[dict]:
     for port_def in plan_ports:
         port = port_def.get("port")
         protocol = port_def.get("protocol", "tcp")
-        listening = str(port) in output
+        # Match the port anchored to a colon and followed by a non-digit to
+        # avoid false positives (e.g. port 80 matching 8080 or 8000).
+        listening = bool(re.search(rf":{port}(?!\d)", output)) if port else False
         results.append({
             "port": port,
             "protocol": protocol,
@@ -387,7 +390,7 @@ def _collect_health_commands(plan_health_commands: list[dict]) -> list[dict]:
     for cmd_def in plan_health_commands:
         command = cmd_def.get("command", "")
         timeout = cmd_def.get("timeout_seconds", 30)
-        argv = command.split()
+        argv = shlex.split(command)
         try:
             result = subprocess.run(
                 argv, capture_output=True, text=True, timeout=timeout,
@@ -432,9 +435,6 @@ def _collect_broad_processes(max_lines: int = 100) -> list[str]:
 def _collect_broad_ports() -> list[str]:
     output = _run(["ss", "-tlnp"])
     return [l.rstrip() for l in output.splitlines() if l.strip()]
-
-
-
 
 
 def collect_ss_connections(max_lines: int = 100) -> list[str]:
@@ -510,8 +510,6 @@ def collect_context(
     If ``diagnostics_plan`` is provided with non-empty sections, collection is
     driven by the plan (only what the plan specifies).  If a section is empty
     or ``diagnostics_plan`` is None, a broad fallback is used for that section.
-
-    Background context (unit logs, disk usage, memory) is always collected.
 
     Background context (unit logs, disk usage, memory) is always collected.
     """

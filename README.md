@@ -79,6 +79,28 @@ juju status
 juju run jaime/0 show-status
 ```
 
+To enable AI-assisted reports (optional):
+
+```bash
+# Store the token as a Juju secret (token is never stored in plain config)
+SECRET_URI=$(juju add-secret jaime-token token=<your-api-token>)
+juju grant-secret jaime-token jaime
+
+# Configure provider and point api-token at the secret URI
+juju config jaime provider=gemini
+juju config jaime api-token="${SECRET_URI}"
+
+# Or for OpenRouter
+juju config jaime provider=openrouter
+juju config jaime api-token="${SECRET_URI}"
+```
+
+For development only, a plain token string is also accepted:
+
+```bash
+juju config jaime api-token="<your-token>"
+```
+
 ## Actions
 
 ```bash
@@ -100,7 +122,7 @@ juju run jaime/0 reset                 # Clear all incidents and start fresh
 | `watch-statuses` | `error,blocked` | Statuses that trigger an incident |
 | `failure-timeout-minutes` | `5` | How long a status must persist before reporting |
 | `cooldown-minutes` | `30` | Min time between reports for the same incident |
-| `log-window-minutes` | `120` | How far back to collect logs |
+| `log-window-minutes` | `30` | How far back to collect logs |
 | `max-context-lines` | `500` | Max lines per collected file/section |
 | `diagnostics` | `""` | JSON monitoring plan (empty = AI-generated on relation) |
 

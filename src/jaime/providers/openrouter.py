@@ -11,10 +11,11 @@ from jaime.providers.base import AIProvider
 logger = logging.getLogger(__name__)
 
 OPENROUTER_API_BASE = "https://openrouter.ai/api/v1"
+_ERROR_BODY_MAX = 500
 
 
 class OpenRouterProvider(AIProvider):
-    def __init__(self, api_token: str, model: str = "anthropic/claude-sonnet-4"):
+    def __init__(self, api_token: str, model: str = "deepseek/deepseek-chat"):
         self._api_token = api_token
         self._model = model
 
@@ -59,7 +60,7 @@ class OpenRouterProvider(AIProvider):
             with urllib.request.urlopen(req, timeout=60) as resp:
                 result = json.loads(resp.read())
         except urllib.error.HTTPError as e:
-            body = e.read().decode(errors="replace")
+            body = e.read().decode(errors="replace")[:_ERROR_BODY_MAX]
             logger.error("OpenRouter API HTTP %s: %s", e.code, body)
             raise
         except urllib.error.URLError as e:

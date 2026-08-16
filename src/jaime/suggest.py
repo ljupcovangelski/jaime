@@ -11,6 +11,7 @@ act:     same as suggest, but also executes every command in the Suggestion.
 import hashlib
 import logging
 import re
+import shlex
 import subprocess
 
 from jaime.incident import Suggestion
@@ -78,12 +79,12 @@ def parse_commands(llm_response: str) -> list[str]:
 def execute_command(command: str, timeout: int = 30) -> dict:
     """Execute a command and return a result dict.
 
-    Uses shell=False by splitting the command string.
+    Uses shell=False by splitting the command string with shlex.
     Returns a dict with keys: command, returncode, stdout, stderr.
     """
     try:
         result = subprocess.run(
-            command.split(),
+            shlex.split(command),
             capture_output=True,
             text=True,
             timeout=timeout,

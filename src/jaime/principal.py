@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import tempfile
 
 logger = logging.getLogger(__name__)
 
@@ -47,9 +48,16 @@ class StatusTracker:
 
     def _save(self) -> None:
         try:
-            os.makedirs(os.path.dirname(self._path), exist_ok=True)
-            with open(self._path, "w") as f:
-                json.dump(self._state, f)
+            dir_path = os.path.dirname(self._path)
+            os.makedirs(dir_path, exist_ok=True)
+            # Write to a temp file in the same directory then rename atomically
+            # to avoid leaving a truncated state file if the process is killed.
+            with tempfile.NamedTemporaryFile(
+                "w", dir=dir_path, delete=False, suffix=".tmp"
+            ) as tmp:
+                json.dump(self._state, tmp)
+                tmp_path = tmp.name
+            os.rename(tmp_path, self._path)
         except Exception as e:
             logger.warning("could not save status state to %s: %s", self._path, e)
 
@@ -68,6 +76,7 @@ class StatusTracker:
         )
         if new_episode:
             self._state[unit] = {"status": status, "since": since, "increment": 1}
+            self._save()
         else:
             self._state[unit] = {
                 "status": status,
@@ -76,7 +85,14 @@ class StatusTracker:
                 "incident": previous.get("incident"),
                 "last_reported": previous.get("last_reported"),
             }
-        self._save()
+            # Only write to disk when meaningful state changed (incident or
+            # last_reported). Bumping the increment alone does not need to
+            # be persisted — it is recalculated from the hook cadence anyway.
+            if (
+                self._state[unit]["incident"] != previous.get("incident")
+                or self._state[unit]["last_reported"] != previous.get("last_reported")
+            ):
+                self._save()
         return self._state[unit]["increment"]
 
     def record_reported(self, unit: str, timestamp: str, incident_dict: dict) -> None:

@@ -221,7 +221,8 @@ def _append_section_charm_config(lines: list[str], context: dict) -> None:
     try:
         parsed = yaml.safe_load(config_yaml)
         options = (parsed or {}).get("options", {})
-    except Exception:
+    except Exception as e:
+        logger.debug("could not parse charm config YAML: %s", e)
         options = {}
 
     if not options:
