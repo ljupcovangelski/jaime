@@ -7,7 +7,7 @@ import pytest
 
 sys.path.insert(0, "src")
 
-from jaime.incident import Incident, Suggestion
+from jaime.incident import Incident, Suggestion, UsageMetadata
 
 
 class TestIncidentOpen:
@@ -137,3 +137,79 @@ class TestSuggestion:
         assert restored.suggestion is not None
         assert restored.suggestion.description == "diagnosis"
         assert "df -h" in restored.suggestion.commands
+
+
+class TestUsageMetadata:
+    def test_defaults_are_zero(self):
+        u = UsageMetadata()
+        assert u.prompt_tokens == 0
+        assert u.completion_tokens == 0
+        assert u.total_tokens == 0
+        assert u.cost_usd is None
+        assert u.model == ""
+
+    def test_to_dict_omits_cost_when_none(self):
+        u = UsageMetadata(prompt_tokens=10, completion_tokens=5, total_tokens=15, model="m")
+        d = u.to_dict()
+        assert "cost_usd" not in d
+        assert d["prompt_tokens"] == 10
+        assert d["total_tokens"] == 15
+
+    def test_to_dict_includes_cost_when_set(self):
+        u = UsageMetadata(cost_usd=0.001234)
+        d = u.to_dict()
+        assert d["cost_usd"] == 0.001234
+
+    def test_from_dict_roundtrip(self):
+        u = UsageMetadata(prompt_tokens=100, completion_tokens=50, total_tokens=150,
+                          cost_usd=0.005, model="deepseek/deepseek-chat")
+        restored = UsageMetadata.from_dict(u.to_dict())
+        assert restored.prompt_tokens == 100
+        assert restored.completion_tokens == 50
+        assert restored.cost_usd == 0.005
+        assert restored.model == "deepseek/deepseek-chat"
+
+    def test_from_dict_missing_cost_returns_none(self):
+        u = UsageMetadata.from_dict({"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7})
+        assert u.cost_usd is None
+
+    def test_add_sums_tokens(self):
+        a = UsageMetadata(prompt_tokens=100, completion_tokens=50, total_tokens=150)
+        b = UsageMetadata(prompt_tokens=200, completion_tokens=80, total_tokens=280)
+        c = a + b
+        assert c.prompt_tokens == 300
+        assert c.completion_tokens == 130
+        assert c.total_tokens == 430
+
+    def test_add_sums_costs_when_both_set(self):
+        a = UsageMetadata(cost_usd=0.001)
+        b = UsageMetadata(cost_usd=0.002)
+        c = a + b
+        assert abs(c.cost_usd - 0.003) < 1e-9
+
+    def test_add_cost_none_when_both_none(self):
+        a = UsageMetadata()
+        b = UsageMetadata()
+        c = a + b
+        assert c.cost_usd is None
+
+    def test_add_cost_partial_none_treated_as_zero(self):
+        a = UsageMetadata(cost_usd=0.005)
+        b = UsageMetadata(cost_usd=None)
+        c = a + b
+        assert c.cost_usd == 0.005
+
+    def test_suggestion_carries_usage_in_roundtrip(self):
+        usage = UsageMetadata(prompt_tokens=10, completion_tokens=5, total_tokens=15,
+                              cost_usd=0.001, model="gemini-2.5-flash")
+        s = Suggestion.from_llm("desc", ["cmd"], usage=usage)
+        restored = Suggestion.from_dict(s.to_dict())
+        assert restored.usage is not None
+        assert restored.usage.prompt_tokens == 10
+        assert restored.usage.cost_usd == 0.001
+
+    def test_suggestion_without_usage_roundtrip(self):
+        s = Suggestion.from_llm("desc", ["cmd"])
+        assert s.usage is None
+        restored = Suggestion.from_dict(s.to_dict())
+        assert restored.usage is None

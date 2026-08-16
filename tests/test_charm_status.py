@@ -433,3 +433,130 @@ class TestConfigChanged:
             h.charm._on_config_changed(mock.MagicMock())
         assert isinstance(h.charm.unit.status, BlockedStatus)
         assert "AI provider error" in h.charm.unit.status.message
+
+
+class TestShowUsageAction:
+    """Tests for _on_action_show_usage."""
+
+    def _make_harness(self, tmp_path):
+        cfg = {**_DEFAULT_CONFIG}
+        with mock.patch.object(JaimeCharm, "_ensure_diagnostics"):
+            h = Harness(JaimeCharm)
+            h.update_config(cfg)
+            h.begin()
+        h.charm._status_tracker = StatusTracker(state_path=str(tmp_path / "state.json"))
+        return h
+
+    def _seed_usage(self, h, unit="postgresql/0", incident_id="abc-123"):
+        """Seed a usage log entry directly into the tracker."""
+        h.charm._status_tracker._state[unit] = {
+            "status": "blocked", "since": "2026-01-01T00:00:00+00:00",
+            "increment": 1, "usage_log": [],
+        }
+        h.charm._status_tracker.record_usage(unit, {
+            "incident_id": incident_id,
+            "timestamp": "2026-01-01T00:01:00+00:00",
+            "model": "deepseek/deepseek-chat",
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "total_tokens": 150,
+            "cost_usd": 0.001,
+        })
+
+    def test_no_usage_returns_message(self, tmp_path):
+        h = self._make_harness(tmp_path)
+        action_event = mock.MagicMock()
+        action_event.params = {"incident-id": ""}
+        h.charm._on_action_show_usage(action_event)
+        call_args = action_event.set_results.call_args[0][0]
+        result = json.loads(call_args["result"])
+        assert "message" in result
+
+    def test_global_summary(self, tmp_path):
+        h = self._make_harness(tmp_path)
+        self._seed_usage(h)
+        action_event = mock.MagicMock()
+        action_event.params = {"incident-id": ""}
+        h.charm._on_action_show_usage(action_event)
+        call_args = action_event.set_results.call_args[0][0]
+        result = json.loads(call_args["result"])
+        assert result["total_tokens"] == 150
+        assert result["prompt_tokens"] == 100
+        assert result["completion_tokens"] == 50
+        assert result["cost_usd"] == 0.001
+        assert result["total_incidents"] == 1
+        assert result["total_calls"] == 1
+        assert "deepseek/deepseek-chat" in result["by_model"]
+        assert result["by_model"]["deepseek/deepseek-chat"]["calls"] == 1
+
+    def test_per_incident_filter(self, tmp_path):
+        h = self._make_harness(tmp_path)
+        self._seed_usage(h, unit="postgresql/0", incident_id="abc-123")
+        self._seed_usage(h, unit="postgresql/1", incident_id="xyz-999")
+        action_event = mock.MagicMock()
+        action_event.params = {"incident-id": "abc-123"}
+        h.charm._on_action_show_usage(action_event)
+        call_args = action_event.set_results.call_args[0][0]
+        result = json.loads(call_args["result"])
+        assert result["incident_id"] == "abc-123"
+        assert result["total_tokens"] == 150
+
+    def test_unknown_incident_id_fails(self, tmp_path):
+        h = self._make_harness(tmp_path)
+        self._seed_usage(h, incident_id="abc-123")
+        action_event = mock.MagicMock()
+        action_event.params = {"incident-id": "no-such-id"}
+        h.charm._on_action_show_usage(action_event)
+        action_event.fail.assert_called_once()
+
+    def test_no_cost_returns_null(self, tmp_path):
+        h = self._make_harness(tmp_path)
+        h.charm._status_tracker._state["postgresql/0"] = {
+            "status": "blocked", "since": "2026-01-01T00:00:00+00:00",
+            "increment": 1, "usage_log": [],
+        }
+        h.charm._status_tracker.record_usage("postgresql/0", {
+            "incident_id": "abc-123",
+            "timestamp": "2026-01-01T00:01:00+00:00",
+            "model": "gemini-2.5-flash",
+            "prompt_tokens": 200,
+            "completion_tokens": 80,
+            "total_tokens": 280,
+            # no cost_usd — Gemini does not return cost
+        })
+        action_event = mock.MagicMock()
+        action_event.params = {"incident-id": ""}
+        h.charm._on_action_show_usage(action_event)
+        call_args = action_event.set_results.call_args[0][0]
+        result = json.loads(call_args["result"])
+        assert result["cost_usd"] is None
+        assert result["by_model"]["gemini-2.5-flash"]["cost_usd"] is None
+
+    def test_per_model_breakdown(self, tmp_path):
+        """Two calls with different models are broken down separately."""
+        h = self._make_harness(tmp_path)
+        h.charm._status_tracker._state["postgresql/0"] = {
+            "status": "blocked", "since": "2026-01-01T00:00:00+00:00",
+            "increment": 1, "usage_log": [],
+        }
+        h.charm._status_tracker.record_usage("postgresql/0", {
+            "incident_id": "inc-1", "timestamp": "2026-01-01T00:01:00+00:00",
+            "model": "deepseek/deepseek-chat",
+            "prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150,
+            "cost_usd": 0.001,
+        })
+        h.charm._status_tracker.record_usage("postgresql/0", {
+            "incident_id": "inc-2", "timestamp": "2026-01-01T00:02:00+00:00",
+            "model": "gemini-2.5-flash",
+            "prompt_tokens": 200, "completion_tokens": 80, "total_tokens": 280,
+            "cost_usd": 0.005,
+        })
+        action_event = mock.MagicMock()
+        action_event.params = {"incident-id": ""}
+        h.charm._on_action_show_usage(action_event)
+        call_args = action_event.set_results.call_args[0][0]
+        result = json.loads(call_args["result"])
+        assert result["total_tokens"] == 430
+        assert abs(result["cost_usd"] - 0.006) < 1e-9
+        assert result["by_model"]["deepseek/deepseek-chat"]["cost_usd"] == 0.001
+        assert result["by_model"]["gemini-2.5-flash"]["cost_usd"] == 0.005

@@ -7,6 +7,7 @@ import urllib.request
 import urllib.error
 
 from jaime.providers.base import AIProvider
+from jaime.incident import UsageMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,7 @@ class OpenRouterProvider(AIProvider):
             logger.warning("OpenRouter check failed:\n%s", traceback.format_exc())
             return f"OpenRouter connection error: {e}"
 
-    def generate(self, prompt: str) -> str:
+    def generate(self, prompt: str) -> tuple[str, UsageMetadata]:
         url = f"{OPENROUTER_API_BASE}/chat/completions"
         payload = json.dumps({
             "model": self._model,
@@ -72,5 +73,17 @@ class OpenRouterProvider(AIProvider):
             raise RuntimeError(f"OpenRouter returned no choices: {result}")
 
         message = choices[0].get("message", {})
-        content = message.get("content", "")
-        return content
+        # content can be None for tool-call responses; default to empty string.
+        text = message.get("content") or ""
+
+        # Extract token usage. OpenRouter reports cost_usd directly.
+        raw_usage = result.get("usage", {})
+        usage = UsageMetadata(
+            prompt_tokens=raw_usage.get("prompt_tokens", 0),
+            completion_tokens=raw_usage.get("completion_tokens", 0),
+            total_tokens=raw_usage.get("total_tokens", 0),
+            cost_usd=raw_usage.get("cost"),
+            model=self._model,
+        )
+
+        return text, usage

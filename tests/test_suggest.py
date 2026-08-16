@@ -14,7 +14,17 @@ from jaime.suggest import (
     run_act,
     run_suggest,
 )
-from jaime.incident import Suggestion
+from jaime.incident import Suggestion, UsageMetadata
+
+
+def _make_provider(response_text: str, usage: UsageMetadata | None = None):
+    """Return a mock provider whose generate() returns (text, usage)."""
+    provider = mock.MagicMock()
+    provider.generate.return_value = (
+        response_text,
+        usage or UsageMetadata(prompt_tokens=10, completion_tokens=5, total_tokens=15, model="test-model"),
+    )
+    return provider
 
 
 class TestBuildSuggestPrompt:
@@ -76,13 +86,23 @@ class TestExecuteCommand:
 
 class TestRunSuggest:
     def test_returns_suggestion(self):
-        provider = mock.MagicMock()
-        provider.generate.return_value = "The issue is X.\n```bash\nsystemctl status\n```"
+        provider = _make_provider("The issue is X.\n```bash\nsystemctl status\n```")
         result = run_suggest(provider, "report content")
         assert isinstance(result, Suggestion)
         assert "The issue is X." in result.description
         assert "systemctl status" in result.commands
         provider.generate.assert_called_once()
+
+    def test_suggestion_carries_usage(self):
+        usage = UsageMetadata(prompt_tokens=100, completion_tokens=50, total_tokens=150,
+                              cost_usd=0.001, model="deepseek/deepseek-chat")
+        provider = _make_provider("diagnosis\n```bash\ndf -h\n```", usage=usage)
+        result = run_suggest(provider, "report content")
+        assert result.usage is not None
+        assert result.usage.prompt_tokens == 100
+        assert result.usage.completion_tokens == 50
+        assert result.usage.cost_usd == 0.001
+        assert result.usage.model == "deepseek/deepseek-chat"
 
     def test_returns_none_when_no_provider(self):
         assert run_suggest(None, "report content") is None
@@ -96,8 +116,7 @@ class TestRunSuggest:
 
 class TestRunAct:
     def test_returns_suggestion_and_results(self):
-        provider = mock.MagicMock()
-        provider.generate.return_value = "```bash\necho hello\n```"
+        provider = _make_provider("```bash\necho hello\n```")
         suggestion, results = run_act(provider, "report")
         assert isinstance(suggestion, Suggestion)
         assert "echo hello" in suggestion.commands
@@ -105,15 +124,13 @@ class TestRunAct:
         assert results[0]["command"] == "echo hello"
 
     def test_executes_commands(self):
-        provider = mock.MagicMock()
-        provider.generate.return_value = "```bash\necho hello\n```"
+        provider = _make_provider("```bash\necho hello\n```")
         _, results = run_act(provider, "report")
         assert results[0]["returncode"] == 0
         assert "hello" in results[0]["stdout"]
 
     def test_dry_run_does_not_execute(self):
-        provider = mock.MagicMock()
-        provider.generate.return_value = "```bash\necho hello\n```"
+        provider = _make_provider("```bash\necho hello\n```")
         with mock.patch("jaime.suggest.execute_command") as mock_exec:
             _, results = run_act(provider, "report", dry_run=True)
         mock_exec.assert_not_called()
