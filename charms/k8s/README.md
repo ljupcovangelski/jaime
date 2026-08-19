@@ -1,20 +1,14 @@
-# Jaime k8s — Juju AI Medic Engine for Kubernetes
-
 Jaime k8s is a Juju **Kubernetes standalone** charm that runs as its own pod
 and monitors other applications in the same Juju model. It detects unhealthy
 workload statuses, collects bounded diagnostic context from the pod, and
 writes structured incident reports. Optionally, it calls an AI provider
 (Gemini or OpenRouter) to produce a diagnosis suggestion.
 
-Workload statuses come from the **Juju controller API**; pod logs/events/metrics
-come from the **Kubernetes API** via the pod's in-cluster service account
-(no `kubectl` binary). Monitoring is **opt-in**: nothing is monitored until
-you list applications in `watch-applications`.
+Workload statuses come from the **Juju controller API**; pod logs/events/metrics come from the **Kubernetes API** via the pod's in-cluster service account
 
 ## Quickstart
 
 ```bash
-# Deploy from CharmHub
 juju deploy jaime-k8s
 ```
 
@@ -39,7 +33,7 @@ MODEL_NAME=<your-model>
 juju add-user jaime-observer
 juju grant jaime-observer read ${MODEL_NAME}
 
-# Set a password non-interactively
+# Set a password
 NEW_PASS=<your-password>
 echo "$NEW_PASS" | juju change-user-password jaime-observer --no-prompt
 

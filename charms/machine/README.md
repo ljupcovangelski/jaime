@@ -1,13 +1,7 @@
-# Jaime — Juju AI Medic Engine (machine subordinate)
-
 Jaime is a Juju **machine subordinate** charm that observes a related
 principal charm on the same host, collects bounded diagnostic context when it
 becomes unhealthy, and writes structured incident reports. Optionally, it
 calls an AI provider (Gemini or OpenRouter) to produce a diagnosis suggestion.
-
-It works in **observe mode** by default: it never mutates the principal and
-performs no remediation unless `mode: act` is explicitly enabled (and act
-mode is currently gated behind a blocked status).
 
 ## Quickstart
 

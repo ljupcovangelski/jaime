@@ -3,7 +3,6 @@
 name: jaime-k8s
 type: charm
 title: Jaime k8s
-subordinate: true
 summary: Jaime k8s - Juju AI Medic Engine for Kubernetes
 description: |
   Jaime k8s is a Juju Kubernetes charm that monitors applications in the same
