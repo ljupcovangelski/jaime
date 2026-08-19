@@ -1,6 +1,9 @@
 # AGENTS.md
 
-This repository contains **Jaime — Juju AI Medic Engine**, a Juju machine subordinate charm for observing unhealthy principal charms, collecting diagnostics, and generating structured incident reports.
+This repository contains **Jaime — Juju AI Medic Engine**, a Juju diagnostic and incident reporting charm available in two variants:
+
+- **machine subordinate** (`charms/machine/`) — co-located with the principal on the same host
+- **Kubernetes standalone** (`charms/k8s/`) — runs as its own pod and monitors other applications in the same Juju model. Workload statuses come from the Juju controller API; pod logs/events come from the Kubernetes API via the pod's in-cluster service account (no `kubectl` binary).
 
 All agents must optimize for correctness, safety, and Juju charm conventions over speed.
 
@@ -176,7 +179,6 @@ Agents must follow these rules:
 7. All decisions and generated outputs must be auditable.
 8. Every incident event should be written in structured JSONL.
 9. The charm must work without an AI provider configured by producing a non-AI report.
-10. Keep phase-1 focused on machine charms, not Kubernetes sidecars.
 
 ## Preferred repository structure
 
@@ -184,29 +186,59 @@ Agents must follow these rules:
 .
 ├── README.md
 ├── AGENTS.md
-├── ARCHITRECTURE.md
+├── ARCHITECTURE.md
 ├── TASKS.md
-├── charmcraft.yaml
-├── metadata.yaml
-├── config.yaml
-├── actions.yaml
-├── src/
-│   ├── charm.py
+├── jaime-package/              # Shared Python library — no Juju dependency
 │   └── jaime/
-│       ├── collector.py
 │       ├── incident.py
 │       ├── logging.py
 │       ├── principal.py
 │       ├── report.py
-│       ├── providers/
-│       │   ├── base.py
-│       │   └── gemini.py
-│       └── utils.py
+│       ├── suggest.py
+│       ├── diagnostics.py
+│       └── providers/
+│           ├── base.py
+│           ├── gemini.py
+│           └── openrouter.py
+├── charms/
+│   ├── machine/                # Machine subordinate charm
+│   │   ├── charmcraft.yaml
+│   │   ├── config.yaml
+│   │   ├── actions.yaml
+│   │   ├── requirements.txt
+│   │   ├── pyproject.toml
+│   │   ├── src/
+│   │   │   ├── charm.py
+│   │   │   └── jaime/
+│   │   │       └── collector.py   # machine-specific
+│   │   ├── .vendored/
+│   │   │   └── jaime-package/  # symlink → ../../jaime-package
+│   │   └── tests/
+│   └── k8s/                    # Kubernetes standalone charm
+│       ├── charmcraft.yaml
+│       ├── config.yaml
+│       ├── actions.yaml
+│       ├── requirements.txt
+│       ├── pyproject.toml
+│       ├── src/
+│       │   ├── charm.py
+│       │   └── jaime/
+│       │       └── collector.py   # k8s-specific (kube API + controller API)
+│       ├── .vendored/
+│       │   └── jaime-package/  # symlink → ../../jaime-package
+│       └── tests/
 ├── tests/
 │   ├── unit/
 │   └── integration/
 └── docs/
 ```
+
+The `jaime` module is a **namespace package** — no `__init__.py` in either
+`jaime-package/jaime/` or `charms/*/src/jaime/`. Python merges both
+directories into a single `jaime` namespace at runtime, so
+`from jaime.incident import Incident` resolves from `jaime-package` and
+`from jaime.collector import collect_context` resolves from the
+charm-local `src/jaime/collector.py`.
 
 ## Agents
 
@@ -232,11 +264,11 @@ Use this agent for Juju-specific implementation.
 Responsibilities:
 
 - `charmcraft.yaml`
-- `metadata.yaml`
 - `config.yaml`
 - `actions.yaml`
-- `src/charm.py`
-- subordinate charm relation design
+- `charms/machine/src/charm.py`
+- `charms/k8s/src/charm.py`
+- subordinate charm relation design (machine)
 - Juju event handling
 - Juju actions
 - `update-status` monitoring logic
@@ -245,10 +277,13 @@ Responsibilities:
 
 Rules:
 
-- Jaime is a machine subordinate charm for phase-1.
-- Do not design Kubernetes sidecar support yet.
-- Do not talk directly to the Juju controller API unless explicitly required.
-- Prefer Juju hook tools and local charm context.
+- The machine charm (`charms/machine/`) and the k8s charm (`charms/k8s/`) are
+  both supported; the k8s charm is standalone and monitors other applications
+  in the same model.
+- The machine charm prefers Juju hook tools and local charm context and should
+  not talk directly to the Juju controller API unless explicitly required.
+- The k8s charm reads workload statuses from the Juju controller API via a
+  dedicated user account (it has no relation to other applications).
 - Keep observe mode as the default.
 - Implement functionality through charm events and actions first.
 - Avoid introducing background daemons, services, snaps, or plugin frameworks unless explicitly requested.
