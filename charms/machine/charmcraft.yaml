@@ -1,0 +1,46 @@
+# Copyright 2026 Canonical, Ltd.
+# See LICENSE file for licensing details.
+name: jaime
+type: charm
+title: Jaime
+subordinate: true
+summary: Jaime - Juju AI Medic Engine
+description: |
+  Jaime is a Juju machine subordinate charm that observes related principal units,
+  collects bounded diagnostic context, writes structured incident reports and optionally calls third party LLM for suggestion of fixes/troubleshooting
+links:
+  contact: https://launchpad.net/~fe-team
+  documentation: https://github.com/ljupcovangelski/jaime
+  issues:
+    - https://github.com/ljupcovangelski/jaime/issues
+  source:
+    - https://github.com/ljupcovangelski/jaime
+
+version: "0.0.7"
+requires:
+  principal:
+    interface: juju-info
+    scope: container
+
+base: ubuntu@24.04
+platforms:
+  ubuntu-24.04-amd64:
+    build-on: [amd64]
+    build-for: [amd64]
+
+parts:
+  charm:
+    plugin: charm
+    source: .
+    override-build: |
+      cp -r _jaime-package/jaime/. src/jaime/
+      craftctl default
+    override-prime: |
+      craftctl default
+      chmod +x $CRAFT_PRIME/dispatch
+      chmod +x $CRAFT_PRIME/src/charm.py
+
+analysis:
+  ignore:
+    linters:
+      - entrypoint

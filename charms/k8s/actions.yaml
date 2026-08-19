@@ -1,0 +1,23 @@
+show-status:
+  description: "Show the current monitoring state for all watched application units."
+  params: {}
+show-usage:
+  description: "Show AI token usage and cost. Returns a global summary across all incidents, or per-incident detail if incident-id is provided."
+  params:
+    incident-id:
+      type: string
+      default: ""
+      description: "Incident ID to filter by. If empty, returns the global summary."
+get-suggestion:
+  description: "Return the AI suggestion for the current open incident."
+  params:
+    additional-context:
+      type: string
+      default: ""
+      description: "Extra context to include in the AI prompt."
+generate-report:
+  description: "Generate and return a Markdown report for the current open incident."
+  params: {}
+reset:
+  description: "Clear all tracked incidents and status state."
+  params: {}

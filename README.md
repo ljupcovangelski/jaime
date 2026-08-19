@@ -1,47 +1,25 @@
-# Jaime — Juju AI Medic Engine
+# Jaime - Juju AI Medic Engine
 
-Jaime is a headless Juju subordinate charm for local diagnostics and incident reporting on the same machine as a principal application charm.
+Jaime is a Juju diagnostic and incident reporting engine, available in two variants:
+- **machine subordinate** (`charms/machine/`) — co-located with a principal machine charm
+- **Kubernetes standalone** (`charms/k8s/`) — runs as its own pod and monitors other applications in the same Juju model
 
-The phase-1 MVP focuses on **Observe mode**:
+The phase-1 MVP focuses on **Observe and Suggest modes**:
 
-- deploy Jaime alongside a principal machine charm, for example PostgreSQL or MySQL
-- monitor the principal unit status from Juju context via `update-status`
+- deploy Jaime alongside a principal machine charm, for example PostgreSQL or MySQL, or in a k8s model
+- monitor the unit status from Juju context via `update-status`
 - detect unhealthy states such as `error` or `blocked`
 - wait for a configurable timeout before creating an incident report
 - collect diagnostics by iterating the monitoring plan, or fall back to broad commands (`ps aux`, `ss -tlnp`, etc.)
 - write structured JSONL audit logs
 - optionally call an AI provider (Gemini or OpenRouter) for diagnosis suggestions
-- do **not** perform remediation in phase-1 unless explicitly enabled
-
-## Scope
-
-Phase 1:
-
-- Juju machine subordinate charm
-- `update-status` based principal monitoring via goal-state
-- diagnostics monitoring plan (AI-generated or manually configured)
-- plan-driven context collection with broad fallback
-- incident lifecycle (open, timeout, collect, report, cooldown, recover)
-- Markdown incident report generation
-- Juju actions for diagnostics and report retrieval
-- structured JSONL audit logging
-- AI provider abstraction (Gemini, OpenRouter) for suggest/act modes
-- 197 unit tests
-
-Out of scope for phase-1:
-
-- automatic remediation (gated behind `mode: act`)
-- Kubernetes sidecar mode
-- Slack, Mattermost, GitHub, or ticketing integrations
-- controller API integration
-- OpenClaw integration
 
 ## Incident flow
 
 ```text
-Jaime deployed as subordinate
-→ identifies related principal unit via goal-state
-→ checks principal status on every update-status
+Jaime
+→ identifies principal unit to monitor
+→ checks unit status on every update-status
 → detects watched status: error/blocked
 → tracks how long the unit remains unhealthy
 → after failure-timeout, opens an incident
@@ -54,34 +32,33 @@ Jaime deployed as subordinate
 → closes incident on recovery
 ```
 
-## Quickstart
+## Quickstart (machine charm)
 
 ```bash
-# Setup
-sudo snap install charmcraft --classic
-sudo snap install lxd
-sudo usermod -aG lxd $USER
-newgrp lxd
+# Deploy Jaime from CharmHub
+juju deploy jaime
 
 # Deploy a principal charm (e.g. postgresql)
-juju deploy postgresql --channel 16/stable --to 0
+juju deploy postgresql --channel 16/stable
 
-# Set AI provider config (optional — works without AI too)
-export JAIME_PROVIDER=gemini
-export JAIME_MODEL=gemini-2.5-flash
-export JAIME_API_TOKEN="<your-token>"
-
-# Pack and deploy Jaime
-make deploy
+juju relate postgresql jaime
 
 # Monitor
 juju status
 juju run jaime/0 show-status
 ```
 
+To update an existing deployment:
+
+```bash
+juju refresh jaime
+```
+
 To enable AI-assisted reports (optional):
 
 ```bash
+juju config jaime mode=suggest
+
 # Store the token as a Juju secret (token is never stored in plain config)
 SECRET_URI=$(juju add-secret jaime-token token=<your-api-token>)
 juju grant-secret jaime-token jaime
@@ -110,6 +87,7 @@ juju run jaime/0 generate-report       # Generate report for current open incide
 juju run jaime/0 get-suggestion        # Get AI suggestion for current incident
 juju run jaime/0 show-status           # Show monitoring state for all units
 juju run jaime/0 reset                 # Clear all incidents and start fresh
+juju run jaime/0 show-usage            # Show LLM API usage (tokens, cost...) per model
 ```
 
 ## Configuration
@@ -156,32 +134,91 @@ Same as suggest, but executes commands returned by the AI. Gated behind explicit
 
 ## Testing
 
-```bash
-# Run all tests
-./scripts/test.sh
-
-# Run with coverage
-./scripts/test.sh --cov=src --cov-report=term
-
-# Run specific test file
-./scripts/test.sh tests/test_collector.py -v
-```
-
-Tests auto-create a virtual environment in `.venv` on first run.
-
-## Development
+Run the tests for each charm from its own directory:
 
 ```bash
-make clean    # Remove build artifacts
-make pack     # Pack the charm
-make deploy   # Pack and deploy with AI provider config (requires env vars)
+cd charms/machine && python3 -m pytest tests/
+cd charms/k8s     && python3 -m pytest tests/
 ```
 
-To update an existing deployment after re-packing:
+## Kubernetes charm (jaime-k8s)
+
+The k8s variant runs as a standalone pod and monitors other applications in
+the same Juju model. Workload statuses come from the **Juju controller API**;
+pod logs/events/metrics come from the **Kubernetes API** via the pod's
+in-cluster service account (no `kubectl` binary).
+
+The machine charm discovers its principal through a relation; the k8s charm
+has no relation, so it needs read access to the model's controller API.
+
+### Deploy
 
 ```bash
-juju refresh jaime --path=./jaime_ubuntu-24.04-amd64.charm --force-units
+juju deploy jaime-k8s
 ```
+
+### Grant read access to the Kubernetes API
+
+All applications in a Juju model share one namespace, so the charm can reach
+other pods there. Its default service account can only list pods; grant pod
+log/event/metrics access once per model:
+
+```bash
+kubectl apply -f charms/k8s/jaime-k8s-rbac.yaml -n <model-name>
+```
+
+### Grant read access to the Juju controller API
+
+Create a dedicated read-only user (a unit's own agent identity does not have
+the `ModelRead` permission required by `Client.FullStatus`):
+
+```bash
+MODEL_NAME=<your-model>
+
+# Create a new juju user with read access on the model
+juju add-user jaime-observer
+juju grant jaime-observer read ${MODEL_NAME}
+
+# Set a password non-interactively
+NEW_PASS=<your-password>
+echo "$NEW_PASS" | juju change-user-password jaime-observer --no-prompt
+
+# Pass the username and password (as a juju secret) to jaime-k8s
+SECRET_URI=$(juju add-secret jaime-juju-api password="$NEW_PASS")
+juju grant-secret jaime-juju-api ${MODEL_NAME}
+juju config jaime-k8s juju-api-user=jaime-observer juju-api-password="${SECRET_URI}"
+```
+
+### Choose which applications to monitor
+
+Monitoring is **opt-in**: an empty `watch-applications` list monitors nothing.
+
+```bash
+juju config jaime-k8s watch-applications=postgresql-k8s,mysql-k8s
+```
+
+### Actions
+
+```bash
+juju run jaime-k8s/0 show-status          # monitoring state
+juju run jaime-k8s/0 generate-report      # report for the open incident
+juju run jaime-k8s/0 get-suggestion       # AI diagnosis for the open incident
+juju run jaime-k8s/0 show-usage           # Show LLM API usage (tokens, cost...) per model
+juju run jaime-k8s/0 reset                # clear all incidents
+```
+
+### k8s-specific configuration
+
+| Key | Default | Description |
+|---|---|---|
+| `watch-applications` | `""` | Comma-separated apps to monitor (empty = none) |
+| `juju-api-user` | `""` | Juju user with read access on the model |
+| `juju-api-password` | `""` | Password or Juju secret URI for `juju-api-user` |
+
+The AI provider options (`mode`, `provider`, `model`, `api-token`) work the
+same as the machine charm, as do `watch-statuses`, `failure-timeout-minutes`,
+`cooldown-minutes`, `log-window-minutes`, `max-context-lines`,
+`report-dir`, and `audit-log-path`.
 
 ## Design principle
 
