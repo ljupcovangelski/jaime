@@ -3,8 +3,8 @@ requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["src"]
+testpaths = ["charms/machine/tests"]
+pythonpath = ["charms/machine/src", "jaime-package"]
 
 [tool.coverage.run]
-source = ["src"]
+source = ["charms/machine/src", "jaime-package"]

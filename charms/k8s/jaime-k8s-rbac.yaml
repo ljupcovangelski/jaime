@@ -1,0 +1,34 @@
+# RBAC for jaime-k8s charm.
+#
+# Juju creates a ServiceAccount named after the application in the model
+# namespace, but it only has get/list on pods by default. The Jaime k8s
+# charm needs to read pod logs, events, and (optionally) metrics for its
+# diagnostics collection. Apply this once per model:
+#
+#   kubectl apply -f jaime-k8s-rbac.yaml -n <model-name>
+#
+# The model name doubles as the namespace name.
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: jaime-k8s-reader
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "events"]
+    verbs: ["get", "list"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jaime-k8s-reader
+subjects:
+  - kind: ServiceAccount
+    name: jaime-k8s
+roleRef:
+  kind: Role
+  name: jaime-k8s-reader
+  apiGroup: rbac.authorization.k8s.io

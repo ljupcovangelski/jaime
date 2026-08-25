@@ -1,0 +1,80 @@
+options:
+  mode:
+    type: string
+    description: >
+      Operating mode.
+      'observe': collect context and generate reports only.
+      'suggest': like observe, plus calls the AI provider to append diagnosis
+        and safe manual remediation suggestions to the report. Nothing is executed.
+      'act': NOT YET IMPLEMENTED. Setting mode to 'act' puts the charm in
+        blocked state until command allowlisting is implemented.
+    default: observe
+  watch-applications:
+    type: string
+    description: >
+      Comma-separated list of application names to monitor (e.g.
+      "postgresql-k8s,mysql-k8s"). Monitoring is opt-in: empty or unset means
+      no applications are monitored. You must explicitly list each
+      application you want Jaime to watch.
+    default: ""
+  juju-api-user:
+    type: string
+    description: >
+      Name of a Juju user with 'read' permission on this model, used to
+      fetch workload statuses from the controller API. A unit's own agent
+      identity does not have this permission. Create with:
+        juju add-user jaime-observer
+        juju grant jaime-observer read <model-name>
+    default: ""
+  juju-api-password:
+    type: string
+    description: >
+      Password for the juju-api-user. Accepts either a Juju secret URI
+      (``secret:<id>``, recommended) or a plain string (development only).
+      When a secret URI is provided, Jaime reads the ``password`` field from
+      the secret content.
+    default: ""
+  provider:
+    type: string
+    description: "AI provider to use for optional report generation. Use 'none' for no provider."
+    default: none
+  model:
+    type: string
+    description: "AI model name used by the selected provider (optional)."
+    default: ""
+  api-token:
+    type: string
+    description: >
+      API token for the configured AI provider. Accepts either a Juju secret URI
+      (``secret:<id>``, recommended) or a plain token string (for development only).
+      When a secret URI is provided, Jaime reads the ``token`` field from the secret
+      content. The token is never logged.
+    default: ""
+  watch-statuses:
+    type: string
+    description: "Comma-separated unit workload statuses that should open an incident."
+    default: "error,blocked"
+  failure-timeout-minutes:
+    type: int
+    description: "How long a watched status must persist before a report is generated."
+    default: 5
+  cooldown-minutes:
+    type: int
+    description: "Minimum time before generating another report for the same unresolved incident."
+    default: 30
+  log-window-minutes:
+    type: int
+    description: "How far back Jaime should collect recent pod logs (minutes)."
+    default: 30
+  max-context-lines:
+    type: int
+    description: "Maximum number of log/context lines to include in a report context bundle."
+    default: 500
+  report-dir:
+    type: string
+    description: "Directory where Markdown report artifacts are written."
+    default: /var/log/jaime/reports
+  audit-log-path:
+    type: string
+    description: "Path to the structured JSONL audit log."
+    default: /var/log/jaime/events.jsonl

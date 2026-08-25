@@ -221,6 +221,33 @@ __marimo__/
 *.charm
 pkg/
 
+# Temporary copy of jaime-package created during charmcraft pack — not committed
+charms/machine/_jaime-package/
+charms/k8s/_jaime-package/
+
+# Shared modules copied into src/jaime/ during charmcraft pack — not committed.
+# Only the charm-local collector.py (and k8s_api.py for k8s) are tracked.
+charms/machine/src/jaime/controller.py
+charms/machine/src/jaime/core.py
+charms/machine/src/jaime/diagnostics.py
+charms/machine/src/jaime/incident.py
+charms/machine/src/jaime/logging.py
+charms/machine/src/jaime/logutils.py
+charms/machine/src/jaime/principal.py
+charms/machine/src/jaime/report.py
+charms/machine/src/jaime/suggest.py
+charms/machine/src/jaime/providers/
+charms/k8s/src/jaime/controller.py
+charms/k8s/src/jaime/core.py
+charms/k8s/src/jaime/diagnostics.py
+charms/k8s/src/jaime/incident.py
+charms/k8s/src/jaime/logging.py
+charms/k8s/src/jaime/logutils.py
+charms/k8s/src/jaime/principal.py
+charms/k8s/src/jaime/report.py
+charms/k8s/src/jaime/suggest.py
+charms/k8s/src/jaime/providers/
+
 # Workflow
 .coding_sessions
 .coding_sessoins/*
