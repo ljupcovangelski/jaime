@@ -1,5 +1,48 @@
 # Changelog
 
+## [0.0.7] - 2026-08-29
+
+`version: "0.0.7"` was introduced alongside the Kubernetes charm, so this entry
+covers everything released since 0.0.6.
+
+### Features
+
+- Add a Kubernetes standalone charm (`jaime-k8s`) that runs as its own pod and monitors other applications in the same Juju model. Monitoring is opt-in via `watch-applications` — empty means nothing is monitored, never "all applications"
+- Read k8s workload statuses from the Juju controller API (`Client.FullStatus`) using a dedicated read-only Juju user, since a unit's own agent identity lacks `ModelRead`
+- Fetch a watched application's live Juju config via `Application.Get`, including which options the operator changed
+- Collect pod logs, events, and metrics through the Kubernetes API using the pod's in-cluster service account — no `kubectl` binary
+- Ship `jaime-k8s-rbac.yaml` granting read access to `pods`, `pods/log`, `events`, and metrics
+- Add AI token usage and cost tracking: one `usage_log` entry per LLM call, preserved across incident episodes, aggregated with a per-model breakdown by the new `show-usage` action
+- Add a `get-suggestion` action with an `additional-context` parameter injected into the prompt as authoritative. Suggestions are cached on the incident and regenerated only when that context or the model changes
+- De-duplicate repeated log lines by normalised pattern, so a health check failing every few seconds collapses to one entry before reaching the AI provider
+- Add socket statistics (`ss -antlup`) and firewall rules (iptables, ufw, nftables) report sections
+
+### Changes
+
+- Restructure into a monorepo: a shared `jaime-package/` library, `charms/machine/`, and `charms/k8s/`, each vendoring the library at pack time. `jaime` is a namespace package, so shared and charm-local modules merge at runtime
+- Extract `CoreMixin` (`core.py`) with the substrate-agnostic behaviour — provider wiring, secret resolution, suggest/act invocation, usage tracking, shared action handlers, and the incident lifecycle state machine. Machine charm 835 -> 262 lines, k8s charm 684 -> 188
+- Extract shared log helpers into `logutils.py`
+- Pass the Gemini API token as an `x-goog-api-key` header instead of a URL query parameter, to keep it out of proxy logs
+- Accept either a Juju secret URI or a plain string for `api-token` and `juju-api-password`
+- Write the status state file atomically via a temp file and rename
+- Reduce the default `log-window-minutes` from 120 to 30
+- Report Juju's raw status timestamp as `status_since` in the incident events, alongside the Jaime-anchored `first_seen`
+- Add `status-since` to the `show-status` action output
+- Remove dead code: the Ops tracing report section and the unused `UsageMetadata.__add__`
+- Sync `ARCHITECTURE.md` and `TASKS.md` with the implemented state; add Phase 3 for multi-substrate support and shift the later phases
+
+### Bug fixes
+
+- Anchor the incident timer to a Jaime-owned `unhealthy_since` instead of Juju's `since`. A charm retrying in a loop re-sets its workload status on every hook, which bumps `since` and previously reset the timer, so `failure-timeout-minutes` was never reached and no incident was ever opened
+- Treat a continuous run of watched statuses as one episode. Flapping between two watched statuses (e.g. `maintenance` <-> `blocked`) no longer clears the open incident and cooldown, so it cannot produce repeat reports for a single failure
+- Start the log-collection window at `unhealthy_since`, so the causal error at the beginning of a failure is inside the collected window
+- Persist the observation increment on every observe. Each hook is a fresh process, so writing only on episode change meant the increment was reloaded from disk and never advanced past 2
+- Add the missing `Incident` import to the machine charm, which raised `NameError` on every hook
+- Stop `config-changed` from overwriting an open-incident display status with a plain "Ready"
+- Encapsulate `StatusTracker.reset()` instead of mutating internal state from the charm
+- Sort Kubernetes events safely when `lastTimestamp` and `firstTimestamp` are both absent
+- Remove the `subordinate` flag from the k8s charm, which is standalone
+
 ## [0.0.6] - 2026-07-15
 
 ### Changes

@@ -27,31 +27,77 @@ class TestObserve:
         tracker.observe("postgresql/0", "blocked", SINCE_A)
         assert tracker.observe("postgresql/0", "blocked", SINCE_A) == 3
 
-    def test_status_change_resets_increment(self, tracker):
-        tracker.observe("postgresql/0", "blocked", SINCE_A)
-        tracker.observe("postgresql/0", "blocked", SINCE_A)
-        assert tracker.observe("postgresql/0", "active", SINCE_B) == 1
+    def test_recovery_resets_increment(self, tracker):
+        """Leaving the watched statuses ends the episode."""
+        tracker.observe("postgresql/0", "blocked", SINCE_A, watched=True)
+        tracker.observe("postgresql/0", "blocked", SINCE_A, watched=True)
+        assert tracker.observe("postgresql/0", "active", SINCE_B, watched=False) == 1
 
-    def test_same_status_new_since_resets_increment(self, tracker):
-        """A new 'since' means a new episode even if status string is the same."""
-        tracker.observe("postgresql/0", "blocked", SINCE_A)
-        tracker.observe("postgresql/0", "blocked", SINCE_A)
-        assert tracker.observe("postgresql/0", "blocked", SINCE_B) == 1
+    def test_same_status_new_since_continues_episode(self, tracker):
+        """Juju bumps `since` whenever a charm re-sets its status.
 
-    def test_same_status_new_since_clears_last_reported(self, tracker):
-        """last_reported must be cleared on a new episode."""
+        That is not a new episode — a charm looping on the same failure with a
+        changing message must not reset the unhealthy timer.
+        """
+        tracker.observe("postgresql/0", "blocked", SINCE_A)
+        tracker.observe("postgresql/0", "blocked", SINCE_A)
+        assert tracker.observe("postgresql/0", "blocked", SINCE_B) == 3
+
+    def test_flapping_between_watched_statuses_continues_episode(self, tracker):
+        """maintenance -> blocked -> maintenance is one continuous episode."""
+        assert tracker.observe("postgresql/0", "maintenance", SINCE_A, watched=True) == 1
+        assert tracker.observe("postgresql/0", "blocked", SINCE_B, watched=True) == 2
+        assert tracker.observe("postgresql/0", "maintenance", SINCE_A, watched=True) == 3
+
+    def test_unhealthy_since_anchored_at_episode_start(self, tracker):
+        """The anchor is the first `since` seen, not the latest one."""
+        tracker.observe("postgresql/0", "maintenance", SINCE_A, watched=True)
+        tracker.observe("postgresql/0", "blocked", SINCE_B, watched=True)
+        assert tracker.unhealthy_since("postgresql/0") == SINCE_A
+
+    def test_unhealthy_since_cleared_on_recovery(self, tracker):
+        tracker.observe("postgresql/0", "blocked", SINCE_A, watched=True)
+        tracker.observe("postgresql/0", "active", SINCE_B, watched=False)
+        assert tracker.unhealthy_since("postgresql/0") is None
+
+    def test_unhealthy_since_re_anchored_on_new_episode(self, tracker):
+        tracker.observe("postgresql/0", "blocked", SINCE_A, watched=True)
+        tracker.observe("postgresql/0", "active", SINCE_A, watched=False)
+        tracker.observe("postgresql/0", "blocked", SINCE_B, watched=True)
+        assert tracker.unhealthy_since("postgresql/0") == SINCE_B
+
+    def test_unhealthy_since_none_for_unknown_unit(self, tracker):
+        assert tracker.unhealthy_since("nope/0") is None
+
+    def test_same_status_new_since_preserves_last_reported(self, tracker):
+        """A `since` bump must not clear the cooldown bookkeeping."""
         tracker.observe("postgresql/0", "blocked", SINCE_A)
         tracker.record_reported("postgresql/0", TS_1, INCIDENT_1)
         assert tracker.last_reported("postgresql/0") == TS_1
 
         tracker.observe("postgresql/0", "blocked", SINCE_B)
+        assert tracker.last_reported("postgresql/0") == TS_1
+        assert tracker.current_incident("postgresql/0") == INCIDENT_1
+
+    def test_flapping_preserves_open_incident(self, tracker):
+        tracker.observe("postgresql/0", "maintenance", SINCE_A, watched=True)
+        tracker.record_reported("postgresql/0", TS_1, INCIDENT_1)
+        tracker.observe("postgresql/0", "blocked", SINCE_B, watched=True)
+        assert tracker.has_open_incident("postgresql/0")
+        assert tracker.last_reported("postgresql/0") == TS_1
+
+    def test_recovery_clears_last_reported(self, tracker):
+        tracker.observe("postgresql/0", "blocked", SINCE_A, watched=True)
+        tracker.record_reported("postgresql/0", TS_1, INCIDENT_1)
+        tracker.observe("postgresql/0", "active", SINCE_B, watched=False)
         assert tracker.last_reported("postgresql/0") is None
 
-    def test_status_change_clears_last_reported(self, tracker):
+    def test_increment_survives_a_reload(self, tracker, tmp_path):
+        """Each hook is a fresh process, so increments must be persisted."""
         tracker.observe("postgresql/0", "blocked", SINCE_A)
-        tracker.record_reported("postgresql/0", TS_1, INCIDENT_1)
-        tracker.observe("postgresql/0", "active", SINCE_B)
-        assert tracker.last_reported("postgresql/0") is None
+        for expected in (2, 3, 4):
+            reloaded = StatusTracker(state_path=tracker._path)
+            assert reloaded.observe("postgresql/0", "blocked", SINCE_A) == expected
 
     def test_multiple_units_are_independent(self, tracker):
         tracker.observe("postgresql/0", "blocked", SINCE_A)

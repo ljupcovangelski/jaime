@@ -185,6 +185,94 @@ class TestFailureTimeout:
         uuid.UUID(entry["incident"]["id"])  # raises if invalid
 
 
+class TestFlappingWorkload:
+    """A charm looping on a failure re-sets its status, bumping Juju's `since`.
+
+    The unhealthy timer must be anchored to when Jaime first saw the unit go
+    unhealthy, otherwise such a unit never reaches failure-timeout-minutes and
+    no incident is ever opened.
+    """
+
+    def test_since_bump_does_not_reset_timer(self, tmp_path):
+        h = make_harness(tmp_path, config_overrides={"failure-timeout-minutes": 1})
+
+        # t=0: first seen unhealthy.
+        opened = []
+        call_log_status(h, make_goal_relations("blocked", since=SINCE), SINCE)
+
+        # The charm re-sets its status every 30s, so `since` keeps moving up.
+        # Juju would report only 0.0 min unhealthy each time.
+        for elapsed in (30, 60, 90):
+            tick = SINCE + datetime.timedelta(seconds=elapsed)
+            records = call_log_status(
+                h, make_goal_relations("blocked", since=tick), tick
+            )
+            opened += [r for r in records if _is_incident_opened(r)]
+
+        # Continuous unhealthiness crosses the 1 min timeout exactly once.
+        assert len(opened) == 1
+
+    def test_flapping_between_watched_statuses_opens_one_incident(self, tmp_path):
+        h = make_harness(
+            tmp_path,
+            config_overrides={
+                "watch-statuses": "error,blocked,maintenance",
+                "failure-timeout-minutes": 1,
+            },
+        )
+
+        opened = []
+        for elapsed, status in (
+            (0, "maintenance"),
+            (25, "blocked"),
+            (50, "maintenance"),
+            (75, "blocked"),
+            (100, "maintenance"),
+        ):
+            tick = SINCE + datetime.timedelta(seconds=elapsed)
+            records = call_log_status(
+                h, make_goal_relations(status, since=tick), tick
+            )
+            opened += [r for r in records if _is_incident_opened(r)]
+
+        assert len(opened) == 1, "flapping must not open a second incident"
+
+    def test_timer_anchored_at_first_unhealthy_observation(self, tmp_path):
+        h = make_harness(
+            tmp_path,
+            config_overrides={
+                "watch-statuses": "error,blocked,maintenance",
+                "failure-timeout-minutes": 1,
+            },
+        )
+        call_log_status(h, make_goal_relations("maintenance", since=SINCE), SINCE)
+
+        later = SINCE + datetime.timedelta(seconds=90)
+        records = call_log_status(
+            h, make_goal_relations("blocked", since=later), later
+        )
+        incident_record = next(r for r in records if _is_incident_opened(r))
+        entry = json.loads(incident_record.getMessage())
+        assert entry["first_seen"] == SINCE_ISO
+        assert entry["status_since"] == later.isoformat()
+
+    def test_recovery_re_arms_the_timer(self, tmp_path):
+        h = make_harness(tmp_path, config_overrides={"failure-timeout-minutes": 1})
+        call_log_status(h, make_goal_relations("blocked", since=SINCE), SINCE)
+
+        recovered_at = SINCE + datetime.timedelta(seconds=30)
+        call_log_status(
+            h, make_goal_relations("active", since=recovered_at), recovered_at
+        )
+
+        # Unhealthy again: the timer restarts from here, so no immediate incident.
+        broke_at = SINCE + datetime.timedelta(seconds=40)
+        records = call_log_status(
+            h, make_goal_relations("blocked", since=broke_at), broke_at
+        )
+        assert not any(_is_incident_opened(r) for r in records)
+
+
 class TestCooldown:
     def test_second_incident_suppressed_within_cooldown(self, tmp_path):
         h = make_harness(tmp_path)
@@ -194,6 +282,21 @@ class TestCooldown:
 
         second_now = SINCE + datetime.timedelta(minutes=20)
         records2 = call_log_status(h, make_goal_relations("blocked"), second_now)
+        assert not any(_is_incident_opened(r) for r in records2)
+        assert any(_is_cooldown(r) for r in records2)
+
+    def test_cooldown_survives_a_since_bump(self, tmp_path):
+        """A `since` bump must not clear the cooldown and re-report."""
+        h = make_harness(tmp_path)
+        first_now = SINCE + datetime.timedelta(minutes=10)
+        records1 = call_log_status(h, make_goal_relations("blocked"), first_now)
+        assert any(_is_incident_opened(r) for r in records1)
+
+        bumped_since = SINCE + datetime.timedelta(minutes=15)
+        second_now = SINCE + datetime.timedelta(minutes=20)
+        records2 = call_log_status(
+            h, make_goal_relations("blocked", since=bumped_since), second_now
+        )
         assert not any(_is_incident_opened(r) for r in records2)
         assert any(_is_cooldown(r) for r in records2)
 

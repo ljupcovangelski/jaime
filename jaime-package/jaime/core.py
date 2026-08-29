@@ -307,12 +307,15 @@ class CoreMixin:
         failure_timeout = self.model.config.get("failure-timeout-minutes", 5)
         cooldown = self.model.config.get("cooldown-minutes", 30)
 
+        watched = status in watch_statuses
         had_open_incident = self._status_tracker.has_open_incident(unit_name)
         prior_incident = self._status_tracker.current_incident(unit_name)
-        increment = self._status_tracker.observe(unit_name, status, since_iso)
+        increment = self._status_tracker.observe(
+            unit_name, status, since_iso, watched
+        )
 
         # --- Recovery ---
-        if status not in watch_statuses:
+        if not watched:
             if increment == 1 and had_open_incident and prior_incident:
                 closed = Incident.from_dict(prior_incident).close()
                 self._status_tracker.close_incident(unit_name, closed.to_dict())
@@ -338,18 +341,27 @@ class CoreMixin:
             self.unit.status = ActiveStatus("Ready")
             return
 
+        # Time the incident from when Jaime first saw this unit go unhealthy,
+        # not from Juju's `since`. Juju bumps `since` every time a charm
+        # re-sets its status — including re-setting the same status with a new
+        # message, or flapping between two watched statuses — so a workload
+        # stuck in a retry loop would otherwise reset the timer forever and
+        # never reach failure-timeout-minutes.
+        first_seen = self._status_tracker.unhealthy_since(unit_name) or since_iso
+
         logger.debug(json.dumps({
             "event": "principal-status-watched",
             "unit": unit_name,
             "workload": status,
-            "first_seen": since_iso,
+            "first_seen": first_seen,
+            "status_since": since_iso,
             "increment": increment,
             "timestamp": now.isoformat(),
         }))
 
         # --- Within failure-timeout: waiting ---
         try:
-            since_dt = datetime.datetime.fromisoformat(since_iso)
+            since_dt = datetime.datetime.fromisoformat(first_seen)
             unhealthy_minutes = (now - since_dt).total_seconds() / 60
         except ValueError:
             unhealthy_minutes = failure_timeout  # unknown since: treat as stale
@@ -379,7 +391,7 @@ class CoreMixin:
                     "event": "principal-status-cooldown",
                     "unit": unit_name,
                     "workload": status,
-                    "first_seen": since_iso,
+                    "first_seen": first_seen,
                     "increment": increment,
                     "cooldown_elapsed_minutes": round(cooldown_elapsed, 1),
                     "cooldown_minutes": cooldown,
@@ -400,7 +412,8 @@ class CoreMixin:
             "event": "incident-opened",
             "unit": unit_name,
             "workload": status,
-            "first_seen": since_iso,
+            "first_seen": first_seen,
+            "status_since": since_iso,
             "increment": increment,
             "incident": incident.to_dict(),
             "timestamp": now.isoformat(),
@@ -412,7 +425,8 @@ class CoreMixin:
             "event": "incident-start",
             "unit": unit_name,
             "workload": status,
-            "first_seen": since_iso,
+            "first_seen": first_seen,
+            "status_since": since_iso,
             "incident_id": incident.id,
             "timestamp": now.isoformat(),
         }, self.model.config.get("audit-log-path", ""))
@@ -421,13 +435,13 @@ class CoreMixin:
         self.unit.status = MaintenanceStatus(
             f"collecting context: {unit_name} ({short_id})"
         )
-        context = self._collect_incident_context(unit_name, since_iso, incident)
+        context = self._collect_incident_context(unit_name, first_seen, incident)
 
         report_path = generate_report(
             incident_id=incident.id,
             unit_name=unit_name,
             workload=status,
-            first_seen=since_iso,
+            first_seen=first_seen,
             context=context,
             report_dir=self.model.config.get("report-dir", ""),
         )
@@ -466,7 +480,8 @@ class CoreMixin:
             results.update({
                 "unit": unit_name,
                 "workload": entry.get("status", "unknown"),
-                "first-seen": entry.get("since", ""),
+                "first-seen": entry.get("unhealthy_since") or entry.get("since", ""),
+                "status-since": entry.get("since", ""),
                 "increment": str(entry.get("increment", 0)),
                 "last-reported": entry.get("last_reported") or "",
                 "incident-id": (entry.get("incident") or {}).get("id", ""),
@@ -578,7 +593,7 @@ class CoreMixin:
         for unit_name, entry in self._status_tracker._state.items():
             inc = entry.get("incident")
             if inc and inc.get("closed_at") is None:
-                since_iso = entry.get("since", "")
+                since_iso = entry.get("unhealthy_since") or entry.get("since", "")
                 context = self._collect_report_context(unit_name, since_iso)
                 report_path = generate_report(
                     incident_id=inc["id"],

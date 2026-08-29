@@ -19,6 +19,7 @@ class StatusTracker:
             "postgresql/0": {
                 "status": "blocked",
                 "since": "2026-07-14T09:37:54+00:00",
+                "unhealthy_since": "2026-07-14T09:37:54+00:00",
                 "increment": 3,
                 "incident": {
                     "id": "550e8400-e29b-41d4-a716-446655440000",
@@ -46,9 +47,16 @@ class StatusTracker:
     The per-model breakdown returned by ``show-usage`` is computed on the
     fly by ``JaimeCharm._summarise_usage`` and is not stored here.
 
-    The increment resets to 1 when the status or since changes (new episode).
-    incident and last_reported are cleared on a new episode.
-    usage_log is preserved across episodes and never cleared.
+    ``since`` is Juju's own "status last set" timestamp and is recorded for
+    reporting only. ``unhealthy_since`` is Jaime's anchor for how long the
+    unit has been unhealthy: it is set when the unit enters a watched status
+    and held steady until the unit recovers.
+
+    An episode is a continuous run of watched (or unwatched) observations.
+    The increment, incident, and last_reported reset when the unit crosses
+    that boundary — not when Juju bumps ``since`` and not when a workload
+    flaps between two watched statuses. usage_log is preserved across
+    episodes and never cleared.
     """
 
     def __init__(self, state_path: str = _DEFAULT_STATE_PATH):
@@ -80,46 +88,55 @@ class StatusTracker:
         except Exception as e:
             logger.warning("could not save status state to %s: %s", self._path, e)
 
-    def observe(self, unit: str, status: str, since: str) -> int:
+    def observe(self, unit: str, status: str, since: str,
+                watched: bool = True) -> int:
         """Record a status observation for a unit.
 
-        A change in either ``status`` or ``since`` is treated as a new episode:
-        the increment, incident, and last_reported are all reset.
-        usage_log is preserved across episodes.
+        ``watched`` says whether ``status`` is one of the statuses that open an
+        incident. Crossing that boundary starts a new episode: the increment
+        resets to 1 and incident/last_reported are cleared. Staying on the same
+        side of it continues the episode, so a workload that flaps between two
+        watched statuses — or one that re-sets the same status with a new
+        message, bumping Juju's ``since`` — keeps a single incident and a
+        single unhealthy timer.
+
+        ``unhealthy_since`` is set from ``since`` when a watched episode starts
+        and preserved for its duration. It is cleared on recovery.
 
         Returns the current increment.
         """
-        previous = self._state.get(unit, {})
-        new_episode = (
-            previous.get("status") != status
-            or previous.get("since") != since
-        )
-        if new_episode:
-            self._state[unit] = {
-                "status": status,
-                "since": since,
-                "increment": 1,
-                "usage_log": previous.get("usage_log", []),
-            }
-            self._save()
+        previous = self._state.get(unit)
+        if previous is None:
+            new_episode = True
+            previous = {}
         else:
-            self._state[unit] = {
-                "status": status,
-                "since": since,
-                "increment": previous.get("increment", 0) + 1,
-                "incident": previous.get("incident"),
-                "last_reported": previous.get("last_reported"),
-                "usage_log": previous.get("usage_log", []),
-            }
-            # Only write to disk when meaningful state changed (incident or
-            # last_reported). Bumping the increment alone does not need to
-            # be persisted — it is recalculated from the hook cadence anyway.
-            if (
-                self._state[unit]["incident"] != previous.get("incident")
-                or self._state[unit]["last_reported"] != previous.get("last_reported")
-            ):
-                self._save()
-        return self._state[unit]["increment"]
+            was_watched = previous.get("unhealthy_since") is not None
+            new_episode = was_watched != watched
+
+        entry = {
+            "status": status,
+            "since": since,
+            "usage_log": previous.get("usage_log", []),
+        }
+        if new_episode:
+            entry["increment"] = 1
+            entry["unhealthy_since"] = since if watched else None
+        else:
+            entry["increment"] = previous.get("increment", 0) + 1
+            entry["unhealthy_since"] = previous.get("unhealthy_since")
+            entry["incident"] = previous.get("incident")
+            entry["last_reported"] = previous.get("last_reported")
+
+        self._state[unit] = entry
+        # Always persist: each hook is a fresh process, so an in-memory-only
+        # increment would be reloaded from the last written value and never
+        # advance past 2.
+        self._save()
+        return entry["increment"]
+
+    def unhealthy_since(self, unit: str) -> str | None:
+        """Return when this unit entered its current watched episode, or None."""
+        return self._state.get(unit, {}).get("unhealthy_since")
 
     def record_reported(self, unit: str, timestamp: str, incident_dict: dict) -> None:
         """Record that an incident was opened and reported for this unit."""
