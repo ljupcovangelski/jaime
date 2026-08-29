@@ -18,6 +18,7 @@ from jaime.diagnostics import (
     make_empty_plan,
 )
 from jaime.principal import StatusTracker
+from jaime.incident import Incident
 from jaime.collector import collect_context
 from jaime.logging import write_event
 from ops.hookcmds import goal_state
