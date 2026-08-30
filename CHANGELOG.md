@@ -20,7 +20,7 @@ covers everything released since 0.0.6.
 ### Changes
 
 - Restructure into a monorepo: a shared `jaime-package/` library, `charms/machine/`, and `charms/k8s/`, each vendoring the library at pack time. `jaime` is a namespace package, so shared and charm-local modules merge at runtime
-- Extract `CoreMixin` (`core.py`) with the substrate-agnostic behaviour — provider wiring, secret resolution, suggest/act invocation, usage tracking, shared action handlers, and the incident lifecycle state machine. Machine charm 835 -> 262 lines, k8s charm 684 -> 188
+- Extract `CoreMixin` (`core.py`) with the substrate-independent behaviour — provider wiring, secret resolution, suggest/act invocation, usage tracking, shared action handlers, and the incident lifecycle state machine. Machine charm 835 -> 262 lines, k8s charm 684 -> 188
 - Extract shared log helpers into `logutils.py`
 - Pass the Gemini API token as an `x-goog-api-key` header instead of a URL query parameter, to keep it out of proxy logs
 - Accept either a Juju secret URI or a plain string for `api-token` and `juju-api-password`
@@ -29,7 +29,8 @@ covers everything released since 0.0.6.
 - Report Juju's raw status timestamp as `status_since` in the incident events, alongside the Jaime-anchored `first_seen`
 - Add `status-since` to the `show-status` action output
 - Remove dead code: the Ops tracing report section and the unused `UsageMetadata.__add__`
-- Sync `ARCHITECTURE.md` and `TASKS.md` with the implemented state; add Phase 3 for multi-substrate support and shift the later phases
+- Sync `ARCHITECTURE.md` and `TASKS.md` with the implemented state. Restructure the roadmap into eight phases, splitting AI-assisted diagnosis (Phase 2, implemented) from assisted remediation (Phase 4, future) and inserting Kubernetes/multi-substrate support as Phase 3
+- Document a two-signal health model in `ARCHITECTURE.md`: Juju workload status is the current incident trigger, but a workload can be broken while Juju still reports `active`, so workload-health checks may trigger incidents in future
 
 ### Bug fixes
 

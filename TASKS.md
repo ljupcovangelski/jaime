@@ -1,5 +1,11 @@
 # Jaime Tasks
 
+Phases 0 to 3 are implemented. Phases 4 to 6 are the active plan.
+
+Later phases and unscoped ideas live in `ARCHITECTURE.md`, which is the roadmap
+source of truth. They are deliberately not listed here until they are worth
+breaking into tasks.
+
 ## 0. Phase 0 — Repository bootstrap
 
 - [x] Create charm repository structure
@@ -10,7 +16,7 @@
 - [x] Add .gitignore
 - [x] Add initial license decision
 
-## 1. Phase 1 — Observe-only MVP
+## 1. Phase 1 — Machine Observe
 
 Deploy Jaimie as a machine subordinate charm. Detect unhealthy principal units, collect diagnostics, and generate structured incident reports without modifying the environment.
 Only logic for `observe` mode is added at this phase.
@@ -97,9 +103,10 @@ Only logic for `observe` mode is added at this phase.
 - [x] [python] Create append-only JSONL audit logger (`logging.py`)
 - [x] [python] Write `incident-start` event on incident open
 - [x] [python] Write `context-collected` event with log line count
-- [x] [python] Write `report-generated` event with path and mode
-- [ ] [python] Write `still-unhealthy` event during timeout wait
-- [x] [python] Write `incident-recovered` event on recovery
+- [x] [python] Write `report-generated` event with report path
+- [x] [python] Emit lifecycle events to the Juju debug log (`incident-opened`, `incident-closed`, `principal-status-watched`, `principal-status-cooldown`, `principal-status-recovered`)
+- [ ] [python] Write `still-unhealthy` event to the audit log during timeout wait (debug log only today)
+- [ ] [python] Write `incident-recovered` event to the audit log on recovery (debug log only today)
 - [x] [python] Include timestamp, incident ID, principal unit, status in all events
 
 ### 1.8. Reports
@@ -148,12 +155,16 @@ Only logic for `observe` mode is added at this phase.
 - [x] [python] Filter unit logs to error/warning lines with context window around last match
 - [x] [python] Parse diagnostics.json and pass to collect_context for plan-driven collection in reports
 - [x] [python] Collect and append health commands output to the incident report
+- [x] [python] De-duplicate repeated log lines by normalised pattern (`deduplicate_lines`)
+- [x] [python] Extract shared log helpers into `logutils.py` (`tail_lines`, `filter_error_context`, `line_pattern`, `deduplicate_lines`)
+- [x] [python] Collect socket statistics (`ss -antlup`) and add report section
+- [x] [python] Collect firewall rules (iptables, ufw, nftables) and add report section
 
-## 2. Phase 2 — Assisted Remediation
+## 2. Phase 2 — AI-assisted Diagnosis
+
+Integrate AI providers to analyse persisted incident evidence, identify likely root causes, and produce advisory remediation suggestions with a complete audit trail. Nothing is executed in this phase.
 
 ### 2.1. Incident suggestion
-
-Integrate AI providers to analyze incidents, suggest remediation actions, and optionally execute approved fixes while maintaining a complete audit trail.
 
 - [x] Add provider interface
 - [x] Add Gemini provider
@@ -165,18 +176,159 @@ Integrate AI providers to analyze incidents, suggest remediation actions, and op
 - [x] Add AI-assisted Markdown report
 - [x] Ensure provider failures fall back to non-AI report
 
-## 3. Phase 3 – Environment Hygiene
+### 2.2. Suggestion engine
 
-Detect and safely clean residual resources left behind by charms, applications, or machines, with a focus on reclaiming failed or unprovisioned infrastructure.
+- [x] [python] Define `Suggestion` dataclass and attach it to the incident
+- [x] [python] Add `run_suggest` — build prompt, call provider, parse commands
+- [x] [python] Extract remediation commands from fenced `bash` code blocks (`parse_commands`)
+- [x] [python] Add a `run_act` skeleton, unreachable until the assisted-remediation phase supplies the safety controls
+- [x] [charm] Block on `mode: act` — real remediation is a later phase, not this one
+- [x] [charm] Add `get-suggestion` action returning description, commands, and count
+- [x] [charm] Add `additional-context` action parameter injected into the prompt as authoritative
+- [x] [charm] Cache the suggestion on the incident; regenerate only when the context hash or model changes
+- [x] [python] Persist the suggestion in `StatusTracker` and write a `suggestion-generated` audit event
 
-## 4. Phase 4 – Knowledge and Support
+### 2.3. Token usage and cost tracking
 
-Generate issue reports, identify known failure patterns, and assist operators with troubleshooting and bug filing.
+- [x] [python] Define `UsageMetadata` (model, prompt/completion/total tokens, cost)
+- [x] [python] Parse usage metadata from Gemini and OpenRouter responses
+- [x] [python] Append one `usage_log` entry per LLM call in `StatusTracker`
+- [x] [python] Preserve `usage_log` across incident episodes
+- [x] [python] Aggregate usage with a per-model breakdown (`summarise_usage`)
+- [x] [charm] Add `show-usage` action with global summary and `incident-id` filter
+- [x] [python] Include usage metadata in the `suggestion-generated` audit event
 
-## 5. Phase 5 – Local Knowledge Engine
+## 3. Phase 3 — Kubernetes / Multi-substrate Support
 
-Learn from previously observed incidents, reports, and remediation outcomes to provide local recommendations without requiring external AI providers.
+Support both a machine subordinate charm and a standalone Kubernetes charm from one codebase, with the substrate-independent behaviour factored into shared code.
 
-## 6. Phase 6 – Fleet Management
+### 3.1. Repository restructure and shared code
 
-Introduce centralized visibility, controller integration, fleet-wide incident analysis, and optional user interfaces for managing multiple Jaimie deployments.
+- [x] [python] Create the shared Jaime library containing substrate-independent business logic
+- [x] [python] Make `jaime` a namespace package so charm-local and shared modules merge at runtime
+- [x] [python] Extract `CoreMixin` (`core.py`) — mode/provider enums, provider wiring, secret resolution, suggest/act invocation, usage tracking, shared action handlers, incident lifecycle state machine
+- [x] [charm] Move the machine charm to `charms/machine/` and reduce `charm.py` to substrate-specific hooks
+- [x] [charm] Define the substrate hook contract (`_collect_incident_context`, `_collect_report_context`)
+- [x] [python] Keep machine host logic and Kubernetes API logic out of the shared incident logic
+- [x] [python] Encapsulate `StatusTracker.reset()`
+- [x] [python] Stop `config-changed` from overwriting an open-incident display status
+- [x] [python] Remove dead code (Ops tracing report section, unused `UsageMetadata.__add__`)
+
+### 3.2. Kubernetes charm skeleton
+
+- [x] [charm] Add `charms/k8s/charmcraft.yaml` as a standalone (non-subordinate) charm
+- [x] [charm] Add `charms/k8s/config.yaml` with `watch-applications`, `juju-api-user`, `juju-api-password`
+- [x] [charm] Add `charms/k8s/actions.yaml` (`show-status`, `show-usage`, `get-suggestion`, `generate-report`, `reset`)
+- [x] [charm] Add `charms/k8s/src/charm.py` monitoring on `update-status` with no relation to watched apps
+- [x] [charm] Make monitoring opt-in — empty `watch-applications` monitors nothing, never "all apps"
+- [x] [charm] Add per-charm `README.md` and icon for CharmHub
+
+### 3.3. Juju controller API access
+
+- [x] [python] Add `controller.py` — WebSocket client for the Juju controller API (stdlib + websocket-client)
+- [x] [python] Derive controller address, CA cert, and model UUID from the unit's own `agent.conf`
+- [x] [python] Authenticate as a dedicated read-only Juju user (`Admin.Login`)
+- [x] [python] Read workload statuses via `Client.FullStatus` and filter by `watch-applications`
+- [x] [python] Read an application's live config via `Application.Get` (option names, values, operator-changed flag)
+- [x] [python] Negotiate facade versions from the login response
+- [x] [charm] Distinguish auth failure (`BlockedStatus`) from transient controller errors (`MaintenanceStatus`)
+- [x] [charm] Resolve `juju-api-password` from a Juju secret URI or plain string
+
+### 3.4. Kubernetes context collection
+
+- [x] [python] Add `k8s_api.py` — read-only Kubernetes API client using the pod's in-cluster service account (no `kubectl` binary)
+- [x] [python] Resolve the pod for a Juju unit via the `unit.juju.is/id` annotation, with a name-convention fallback
+- [x] [python] Collect pod logs per container bounded by `sinceTime` and `tailLines`
+- [x] [python] Collect Kubernetes events for the pod
+- [x] [python] Collect CPU/memory usage from metrics-server when available
+- [x] [python] Summarise the pod (phase, node, conditions, containers, images, restarts, probes, resources, volumes)
+- [x] [python] Implement the same `collect_context()` interface as the machine collector
+- [x] [python] Add k8s report sections (pod, events, resource usage) and a Juju config section
+- [x] [python] Handle k8s events with missing timestamps when sorting
+- [x] [charm] Ship `jaime-k8s-rbac.yaml` granting `pods`, `pods/log`, `events`, and metrics read access
+
+### 3.5. Build and packaging
+
+- [x] [charm] Vendor `jaime-package` into each charm at build time via `.vendored/` symlink and `override-build`
+- [x] [charm] Add `make pack-machine`, `make pack-k8s`, and `make pack` targets
+- [x] [docs] Document both charms in the root `README.md`
+
+### 3.6. Tests
+
+- [x] [test] Unit test `controller.py` — `agent.conf` parsing, login, facade negotiation, status extraction
+- [x] [test] Unit test `k8s_api.py` — pod resolution, logs, events, metrics, error handling
+- [x] [test] Unit test the k8s collector and k8s report sections
+- [x] [test] Unit test `CoreMixin` once against a dummy charm instead of duplicating per charm
+- [x] [test] Keep both suites green (machine 226 tests, k8s 55 tests)
+
+## 4. Phase 4 — Improving user experience
+
+Make both charms pleasant to build, deploy and read output from.
+
+### 4.1. Build and packaging
+
+- [ ] [project] Make `pack-machine` and `pack-k8s` write distinct artifacts that never delete each other's
+- [ ] [project] Add `pack-all` producing both charms in one run
+- [ ] [project] Stop `clean` from wiping `.venv/` and `.tox/`; split into `clean` and `distclean`
+- [ ] [project] Fix the `deploy` and `remove` targets: machine-only assumptions and the `PRINCIPLE_CHARM` typo
+
+### 4.2. Kubernetes deployment guidance
+
+- [ ] [charm] Add an action that emits the exact setup steps (RBAC, Juju user, secrets, config)
+- [ ] [charm] Block until prerequisites are verified: controller authenticated and Kubernetes API readable
+- [ ] [charm] Add an explicit RBAC preflight check instead of today's silent debug-level failure
+- [ ] [docs] Fix `charms/k8s/README.md` `grant-secret` target — it takes an application, not a model
+- [ ] [docs] Document granting the AI token secret to the application
+
+### 4.3. Machine charm controller access
+
+- [ ] [charm] Read unit status from the Juju controller API in the machine charm
+- [ ] [charm] Monitor co-located subordinate units on the same machine
+- [ ] [docs] Update the `AGENTS.md` rule and the `ARCHITECTURE.md` statement that this reverses
+
+### 4.4. Config consistency
+
+- [ ] [test] Assert shared option keys, types and defaults match across both charms
+- [ ] [charm] Align the drifted descriptions: `api-token`, `watch-statuses`, `log-window-minutes`, `report-dir`
+
+### 4.5. Report content
+
+- [ ] [python] Add snap and service detail to machine incident reports
+- [ ] [python] Add further pod and container detail to k8s incident reports
+- [ ] [python] Bound every addition by time, lines or bytes and keep it within `max-context-lines`
+
+## 5. Phase 5 — CI/CD, integration tests and CharmHub release
+
+### 5.1. Continuous integration
+
+- [ ] [test] Run both unit suites and lint on every pull request
+
+### 5.2. Integration tests
+
+- [ ] [test] Deploy both charms, inject a fault, assert incident → report → suggestion
+- [ ] [test] Cover the flapping-workload case that unit tests now guard
+- [ ] [test] Cover missing Kubernetes RBAC and rejected controller credentials
+
+### 5.3. Release
+
+- [ ] [project] Publish both charms to CharmHub with tracks and channels
+- [ ] [docs] Per-charm CharmHub page content
+
+## 6. Phase 6 — Clustered operation for machine charms
+
+Today a subordinate Jaime unit runs per principal unit, so a multi-unit application produces one independent incident, one LLM call and one report per unit, with no view of the cluster.
+
+### 6.1. Leader aggregation
+
+- [ ] [charm] Add a peer relation to the machine subordinate
+- [ ] [charm] Followers publish compacted local context; the leader aggregates it
+- [ ] [charm] Make one LLM call per cluster incident, owned by the leader
+- [ ] [charm] Keep incident state in the peer application databag so it survives leader change
+- [ ] [python] Leader-owned usage accounting across all units
+- [ ] [python] Define the aggregation window across independent `update-status` cadences
+- [ ] [python] Keep unit-level detection; add cluster-level aggregation on top
+
+### 6.2. Multi-application monitoring
+
+- [ ] [charm] Monitor a configured list of applications, as the k8s charm does
+

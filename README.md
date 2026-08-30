@@ -4,7 +4,8 @@ Jaime is a Juju diagnostic and incident reporting engine, available in two varia
 - **machine subordinate** (`charms/machine/`) — co-located with a principal machine charm
 - **Kubernetes standalone** (`charms/k8s/`) — runs as its own pod and monitors other applications in the same Juju model
 
-The phase-1 MVP focuses on **Observe and Suggest modes**:
+Jaime observes and diagnoses. It does not remediate: `act` mode is blocked, and
+AI output is always advisory.
 
 - deploy Jaime alongside a principal machine charm, for example PostgreSQL or MySQL, or in a k8s model
 - monitor the unit status from Juju context via `update-status`
@@ -18,7 +19,7 @@ The phase-1 MVP focuses on **Observe and Suggest modes**:
 
 ```text
 Jaime
-→ identifies principal unit to monitor
+→ identifies the unit(s) to monitor
 → checks unit status on every update-status
 → detects watched status: error/blocked
 → tracks how long the unit remains unhealthy
@@ -26,13 +27,24 @@ Jaime
 → loads diagnostics plan (or uses broad fallback)
 → collects per-plan context (logs, processes, systemd, ports, env vars, health commands)
 → collects background context (juju logs, charm config, disk, memory)
-→ writes Markdown report
+→ writes Markdown report from the collected evidence
 → writes JSONL audit events
+→ in suggest mode, sends the stored report to the AI provider and attaches the suggestion
 → respects cooldown before next report
 → closes incident on recovery
 ```
 
+The unhealthy timer is anchored to when Jaime first saw the unit go unhealthy,
+not to Juju's `since` timestamp. A workload retrying in a loop re-sets its status
+on every hook, so relying on Juju's value would reset the timer indefinitely and
+never open an incident.
+
 ## Quickstart (machine charm)
+
+Order matters. The diagnostics plan is generated **once**, when the principal
+relation is joined, and `config-changed` does not regenerate it. Configure the AI
+provider *before* relating, or the plan will be empty until you remove and re-add
+the relation.
 
 ```bash
 # Deploy Jaime from CharmHub
@@ -41,6 +53,12 @@ juju deploy jaime
 # Deploy a principal charm (e.g. postgresql)
 juju deploy postgresql --channel 16/stable
 
+# Optional but do it now, not later: enable AI-assisted diagnosis
+SECRET_URI=$(juju add-secret jaime-token token=<your-api-token>)
+juju grant-secret jaime-token jaime
+juju config jaime mode=suggest provider=gemini api-token="${SECRET_URI}"
+
+# Relate last, so the diagnostics plan is generated with the provider available
 juju relate postgresql jaime
 
 # Monitor
@@ -54,7 +72,10 @@ To update an existing deployment:
 juju refresh jaime
 ```
 
-To enable AI-assisted reports (optional):
+The token is stored as a Juju secret and never written to plain config. For
+OpenRouter, use `provider=openrouter` with the same secret URI. 
+
+To enable AI-assisted suggestions (optional):
 
 ```bash
 juju config jaime mode=suggest
@@ -78,6 +99,12 @@ For development only, a plain token string is also accepted:
 juju config jaime api-token="<your-token>"
 ```
 
+If the plan came out empty because the provider was configured after relating:
+
+```bash
+juju remove-relation postgresql jaime && juju relate postgresql jaime
+```
+
 ## Actions
 
 ```bash
@@ -89,6 +116,17 @@ juju run jaime/0 show-status           # Show monitoring state for all units
 juju run jaime/0 reset                 # Clear all incidents and start fresh
 juju run jaime/0 show-usage            # Show LLM API usage (tokens, cost...) per model
 ```
+
+`get-suggestion` accepts `additional-context`, which is injected into the prompt
+and treated as authoritative for the diagnosis:
+
+```bash
+juju run jaime/0 get-suggestion \
+  additional-context="Disk was resized 20 min ago; pgdata is on /dev/sdb1"
+```
+
+The suggestion is cached on the incident and only regenerated when that context
+or the configured model changes, so you can iterate by editing the text.
 
 ## Configuration
 
@@ -102,9 +140,9 @@ juju run jaime/0 show-usage            # Show LLM API usage (tokens, cost...) pe
 | `cooldown-minutes` | `30` | Min time between reports for the same incident |
 | `log-window-minutes` | `30` | How far back to collect logs |
 | `max-context-lines` | `500` | Max lines per collected file/section |
-| `diagnostics` | `""` | JSON monitoring plan (empty = AI-generated on relation) |
+| `diagnostics` | `""` | JSON monitoring plan, machine charm only (empty = AI-generated on relation) |
 
-See `config.yaml` for full reference.
+See `charms/machine/config.yaml` and `charms/k8s/config.yaml` for the full reference.
 
 ## Diagnostics plan
 
@@ -122,15 +160,26 @@ See `examples/diagnostics.json` for a sample plan and `examples/report.md` for t
 
 ### observe (default)
 
-Collect context, generate reports, write audit logs. No AI interaction.
+Collect context, generate reports, write audit logs. No AI diagnosis. On the
+machine charm the AI provider is still used once, to generate the diagnostics
+plan when the principal relation is joined; if no provider is configured an
+empty plan is written and Jaime falls back to broad commands.
 
 ### suggest
 
-Same as observe, but after generating the base report, calls the AI provider (Gemini or OpenRouter) and appends a diagnosis section. No commands are executed.
+Same as observe, plus an AI diagnosis. Jaime sends the already-written report to
+the provider and attaches the returned root-cause description and single
+suggested command to the incident, retrievable with `get-suggestion`. The
+suggestion is **not** merged into the Markdown report, and nothing is executed.
 
 ### act
 
-Same as suggest, but executes commands returned by the AI. Gated behind explicit opt-in. All executions are audited to the JSONL log.
+**Not implemented.** Setting `mode=act` puts the charm in a blocked state and
+Jaime does nothing. No command is ever executed today.
+
+It stays blocked until command and policy allowlisting, bounded execution, a
+dry-run control, a full audit trail, and rollback metadata exist. See the
+assisted-remediation phase in `ARCHITECTURE.md`.
 
 ## Testing
 
@@ -153,9 +202,16 @@ has no relation, so it needs read access to the model's controller API.
 
 ### Deploy
 
+The application **must** be named `jaime-k8s`: the RoleBinding in
+`jaime-k8s-rbac.yaml` names that ServiceAccount.
+
 ```bash
 juju deploy jaime-k8s
 ```
+
+Both grants below are required, and they fail differently. Without the
+Kubernetes RBAC you get a report with empty log and event sections; without
+valid Juju credentials the charm reports a blocked status.
 
 ### Grant read access to the Kubernetes API
 
@@ -185,8 +241,18 @@ echo "$NEW_PASS" | juju change-user-password jaime-observer --no-prompt
 
 # Pass the username and password (as a juju secret) to jaime-k8s
 SECRET_URI=$(juju add-secret jaime-juju-api password="$NEW_PASS")
-juju grant-secret jaime-juju-api ${MODEL_NAME}
+juju grant-secret jaime-juju-api jaime-k8s
 juju config jaime-k8s juju-api-user=jaime-observer juju-api-password="${SECRET_URI}"
+```
+
+Note that `juju grant-secret` takes the **application** name, not the model name.
+
+### Enable AI-assisted diagnosis (optional)
+
+```bash
+AI_SECRET=$(juju add-secret jaime-token token=<your-api-token>)
+juju grant-secret jaime-token jaime-k8s
+juju config jaime-k8s mode=suggest provider=gemini api-token="${AI_SECRET}"
 ```
 
 ### Choose which applications to monitor
@@ -225,3 +291,28 @@ same as the machine charm, as do `watch-statuses`, `failure-timeout-minutes`,
 Jaime should be boring, auditable, and safe.
 
 It collects facts first, produces reports second, and only attempts changes in later phases with strict allowlists, dry-run support, and explicit operator intent.
+
+## Roadmap and vision
+
+The direction is to grow Jaime from a reporter into a diagnostician, and only
+then into something that acts — earning each step with evidence.
+
+Today Jaime watches one signal, Juju's workload status, one unit at a time, and
+hands an operator a report plus an advisory suggestion. The next steps make that
+foundation trustworthy rather than broader: a deployment story that tells you
+what it needs instead of failing quietly, integration tests that prove the whole
+path from fault to suggestion, and a released charm on CharmHub. From there,
+Jaime learns to reason about a *cluster* rather than a host, with a leader that
+gathers evidence from its peers and asks the model one well-informed question
+instead of each unit asking its own poorly-informed one.
+
+Beyond that lie the harder problems: a composite health model, because a
+workload can be broken while Juju still reports it `active`, so Juju's status is
+a useful trigger and not the truth; and eventually assisted remediation, which
+stays blocked until allowlisting, bounded execution, dry-run, audit trail, and
+rollback make it safe to let an AI suggestion become an action.
+
+The invariant across all of it: raw evidence is collected and persisted before
+any model is consulted, every AI call is auditable and costed, and Jaime never
+changes a system the operator did not ask it to change. See `ARCHITECTURE.md` for
+the full roadmap and `TASKS.md` for the active plan.
