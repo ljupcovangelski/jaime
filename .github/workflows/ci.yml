@@ -84,8 +84,20 @@ jobs:
       - name: Initialise LXD
         run: |
           sudo snap refresh lxd || sudo snap install lxd
+          sudo lxd waitready --timeout=60
           sudo lxd init --auto
           sudo usermod -aG lxd "$USER"
+          # GitHub runners ship Docker, which sets the iptables FORWARD policy
+          # to DROP. LXD's bridge routes container traffic through FORWARD, so
+          # without this every container launches with no outbound network and
+          # charmcraft fails with "a network related operation failed in a
+          # context of no network access" — which misleadingly implicates the
+          # runner's own connectivity rather than the container's.
+          sudo iptables -P FORWARD ACCEPT
+          # Runners can also hand out an IPv6 address that is not actually
+          # routable, which produces the identical symptom. Must come after
+          # `lxd init --auto`, which is what creates lxdbr0.
+          sudo lxc network set lxdbr0 ipv6.address none
 
       - name: Pack both charms
         run: sg lxd -c "make pack-all"
