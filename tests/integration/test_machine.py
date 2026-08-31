@@ -159,12 +159,20 @@ class TestIncidentLifecycle:
         assert task.results.get("cached") == "true"
 
     def test_recovery_closes_incident(self, deployed):
+        unit = jaime_unit(deployed)
         set_principal_status(deployed, "active", "recovered")
+        # Jaime holds ActiveStatus while an incident is open, so waiting for
+        # all_active would be satisfied instantly and assert against a stale
+        # message. Wait for the incident to actually close, which Jaime does on
+        # its next update-status after seeing the principal leave a watched
+        # status.
         deployed.wait(
-            lambda s: jubilant.all_active(s, PRINCIPAL_APP, JAIME_APP),
+            lambda s: (
+                principal_status(s) == "active"
+                and "incident open" not in jaime_message(s, unit)
+            ),
             timeout=15 * 60,
         )
-        unit = jaime_unit(deployed)
         task = deployed.run(unit, "show-status")
         assert task.success
         assert "incident open" not in jaime_message(deployed.status(), unit)
