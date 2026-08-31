@@ -151,8 +151,8 @@ class TestNoProviderFallback:
         deployed_k8s.wait(lambda s: jubilant.all_blocked(s, K8S_APP_NAME))
 
         status = deployed_k8s.status()
-        message = status.apps[K8S_APP_NAME].units[_jaime_unit()].workload_status.message
-        assert "not yet implemented" in message
+        unit_info = status.get_units(K8S_APP_NAME)[_jaime_unit()]
+        assert "not yet implemented" in unit_info.workload_status.message
 
         deployed_k8s.config(K8S_APP_NAME, {"mode": "observe"})
         deployed_k8s.wait(lambda s: jubilant.all_active(s, K8S_APP_NAME))

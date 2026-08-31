@@ -379,6 +379,7 @@ from the `ARCHITECTURE.md` ideas list because it gates the CharmHub release.
 - [x] [test] Assert the non-AI fallback still produces a report
 - [ ] [test] Run the integration suite against a real controller and fix what the first run surfaces
 - [ ] [test] Add the k8s integration job to CI once a MicroK8s runner is available
+- [ ] [test] Cover a realistic principal such as `postgresql 16/stable`, which is on ubuntu@24.04. The suite currently uses `any-charm` with `status-set`, which is deterministic but exercises no real workload, so Jaime's host collectors are never run against a genuine service.
 
 ### 5.3. Release
 

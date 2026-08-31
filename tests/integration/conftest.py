@@ -42,6 +42,62 @@ K8S_APP_NAME = "jaime-k8s"
 # five-minute production default.
 FAILURE_TIMEOUT_MINUTES = 1
 
+JAIME_APP = "jaime"
+
+# The Jaime machine charm is built for ubuntu@24.04 only, and Juju refuses to
+# relate a subordinate to a principal whose base it does not support:
+#
+#   ERROR cannot add relation "jaime:principal <app>:juju-info": subordinate
+#   must support principal application's base
+#
+# So the principal must also be on 24.04. That rules out mysql 8.0/stable and
+# postgresql 14/stable, which are both jammy; postgresql 16/stable is noble.
+#
+# any-charm is used rather than a real workload because its status can be
+# driven deterministically via set_principal_status, so the tests do not
+# depend on a particular charm's internal service names or on which status
+# that charm happens to report when it degrades. Covering a realistic
+# principal is tracked separately in TASKS.md 5.2.
+PRINCIPAL_APP = "any-charm"
+PRINCIPAL_CHANNEL = "latest/beta"
+PRINCIPAL_BASE = "ubuntu@24.04"
+PRINCIPAL_UNIT = f"{PRINCIPAL_APP}/0"
+
+
+def jaime_unit(juju) -> str:
+    """Return the name of the subordinate Jaime unit.
+
+    Subordinate units are not listed under ``status.apps[app].units``, which
+    is empty for a subordinate. Juju nests them under the principal unit's
+    ``subordinates`` map, and ``Status.get_units`` resolves that via the app's
+    ``subordinate_to`` list.
+    """
+    units = juju.status().get_units(JAIME_APP)
+    assert units, "Jaime subordinate has no units"
+    return next(iter(units))
+
+
+def jaime_message(status, unit: str) -> str:
+    """Workload status message of the Jaime subordinate unit, or ""."""
+    unit_info = status.get_units(JAIME_APP).get(unit)
+    return unit_info.workload_status.message if unit_info else ""
+
+
+def principal_status(status) -> str:
+    """Current workload status of the principal unit, or ""."""
+    unit_info = status.get_units(PRINCIPAL_APP).get(PRINCIPAL_UNIT)
+    return unit_info.workload_status.current if unit_info else ""
+
+
+def set_principal_status(juju, status: str, message: str) -> None:
+    """Drive the principal's workload status via the status-set hook tool.
+
+    Uses `juju exec` rather than breaking a real workload, so status changes
+    are immediate and deterministic. Each call also bumps Juju's `since`
+    field, which is exactly what the flapping tests need to exercise.
+    """
+    juju.exec("status-set", status, message, unit=PRINCIPAL_UNIT)
+
 
 def _charm_path(glob: str) -> pathlib.Path:
     """Locate a packed charm, failing with a build hint if it is missing."""

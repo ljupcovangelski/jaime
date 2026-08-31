@@ -16,25 +16,24 @@ Requires a bootstrapped machine controller (LXD).
 import jubilant
 import pytest
 
-from .conftest import FAILURE_TIMEOUT_MINUTES
+from .conftest import (
+    FAILURE_TIMEOUT_MINUTES,
+    JAIME_APP,
+    PRINCIPAL_APP,
+    PRINCIPAL_BASE,
+    PRINCIPAL_CHANNEL,
+    jaime_message,
+    jaime_unit,
+    principal_status,
+    set_principal_status,
+)
 
 pytestmark = pytest.mark.integration
-
-JAIME_APP = "jaime"
-# Any charm whose workload status we can drive repeatedly. `any-charm` exposes
-# an action for setting arbitrary statuses, which is exactly the flapping
-# behaviour we need.
-PRINCIPAL_APP = "any-charm"
-PRINCIPAL_CHANNEL = "beta"
-
-
-def _jaime_unit(juju: jubilant.Juju) -> str:
-    return next(iter(juju.status().apps[JAIME_APP].units))
 
 
 @pytest.fixture(scope="module")
 def flapping_model(juju, machine_charm):
-    juju.deploy(PRINCIPAL_APP, channel=PRINCIPAL_CHANNEL)
+    juju.deploy(PRINCIPAL_APP, channel=PRINCIPAL_CHANNEL, base=PRINCIPAL_BASE)
     juju.deploy(
         machine_charm,
         JAIME_APP,
@@ -43,25 +42,16 @@ def flapping_model(juju, machine_charm):
             "provider": "none",
             "failure-timeout-minutes": FAILURE_TIMEOUT_MINUTES,
             "cooldown-minutes": 1,
-            "watch-statuses": "error,blocked",
+            # maintenance is watched alongside blocked so the flapping test can
+            # move between two watched statuses using only values status-set
+            # accepts. `error` is not settable; it is a Juju agent state.
+            "watch-statuses": "blocked,maintenance",
         },
     )
     juju.wait(lambda s: jubilant.all_active(s, PRINCIPAL_APP))
     juju.integrate(JAIME_APP, PRINCIPAL_APP)
     juju.wait(lambda s: jubilant.all_active(s, PRINCIPAL_APP, JAIME_APP))
     return juju
-
-
-def _set_principal_status(juju, status: str, message: str):
-    """Re-set the principal workload status, bumping Juju's `since` field."""
-    juju.run(
-        f"{PRINCIPAL_APP}/0",
-        "rpc",
-        {
-            "method": "set_status",
-            "kwargs": f'{{"status": "{status}", "message": "{message}"}}',
-        },
-    )
 
 
 class TestFlappingWorkload:
@@ -72,14 +62,13 @@ class TestFlappingWorkload:
         the incident would never open. Anchored on `unhealthy_since`, it does.
         """
         juju = flapping_model
-        unit = _jaime_unit(juju)
+        unit = jaime_unit(juju)
 
         # Flap the status repeatedly across a span longer than the timeout.
         for i in range(6):
-            _set_principal_status(juju, "blocked", f"retry attempt {i}")
+            set_principal_status(juju, "blocked", f"retry attempt {i}")
             juju.wait(
-                lambda s: s.apps[PRINCIPAL_APP].units[f"{PRINCIPAL_APP}/0"]
-                .workload_status.current == "blocked",
+                lambda s: principal_status(s) == "blocked",
                 timeout=120,
             )
 
@@ -87,7 +76,7 @@ class TestFlappingWorkload:
         # must still open once failure-timeout-minutes has elapsed since the
         # FIRST unhealthy observation.
         juju.wait(
-            lambda s: "incident open" in s.apps[JAIME_APP].units[unit].workload_status.message,
+            lambda s: "incident open" in jaime_message(s, unit),
             timeout=15 * 60,
         )
 
@@ -98,7 +87,7 @@ class TestFlappingWorkload:
     def test_first_seen_precedes_status_since(self, flapping_model):
         """show-status must expose both anchors, with first-seen the older."""
         juju = flapping_model
-        task = juju.run(_jaime_unit(juju), "show-status")
+        task = juju.run(jaime_unit(juju), "show-status")
         assert task.success
 
         first_seen = task.results.get("first-seen", "")
@@ -109,17 +98,27 @@ class TestFlappingWorkload:
         assert first_seen <= status_since
 
     def test_flapping_between_watched_statuses_keeps_one_incident(self, flapping_model):
-        """error <-> blocked flapping must not open a second incident."""
+        """Flapping between two watched statuses must not open a second incident.
+
+        Uses blocked <-> maintenance rather than blocked <-> error: `error` is
+        a Juju agent state produced by a failed hook, not a workload status,
+        so status-set cannot produce it. Both statuses here are in the
+        fixture's watch-statuses, which is what the assertion depends on.
+        """
         juju = flapping_model
-        unit = _jaime_unit(juju)
+        unit = jaime_unit(juju)
 
         before = juju.run(unit, "show-status").results.get("incident-id")
+        assert before, "expected an incident to already be open"
 
-        _set_principal_status(juju, "error", "hook failed")
-        _set_principal_status(juju, "blocked", "still broken")
+        set_principal_status(juju, "maintenance", "restarting")
+        juju.wait(lambda s: principal_status(s) == "maintenance", timeout=120)
+
+        set_principal_status(juju, "blocked", "still broken")
+        juju.wait(lambda s: principal_status(s) == "blocked", timeout=120)
 
         juju.wait(
-            lambda s: "incident open" in s.apps[JAIME_APP].units[unit].workload_status.message,
+            lambda s: "incident open" in jaime_message(s, unit),
             timeout=10 * 60,
         )
 
