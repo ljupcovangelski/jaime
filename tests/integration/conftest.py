@@ -16,8 +16,17 @@ selected: a machine cloud (LXD) for the machine charm, a Kubernetes cloud
 import os
 import pathlib
 
-import jubilant
 import pytest
+
+# jubilant is declared in tests/integration/requirements.txt and is not
+# installed for the unit suites. Degrade gracefully rather than breaking
+# collection, so that pointing pytest at tests/ instead of tests/unit/
+# skips this directory instead of failing the whole run.
+try:
+    import jubilant
+except ImportError:  # pragma: no cover
+    jubilant = None
+    collect_ignore_glob = ["test_*.py"]
 
 DIST_DIR = pathlib.Path(__file__).resolve().parents[2] / "dist"
 
@@ -60,8 +69,18 @@ def keep_models(request) -> bool:
 
 @pytest.fixture(scope="module")
 def juju(keep_models):
-    """A temporary Juju model, torn down at the end of the module."""
-    with jubilant.temp_model(keep=keep_models) as juju:
+    """A temporary Juju model, torn down at the end of the module.
+
+    Jaime's incident lifecycle is driven by ``update-status``. Juju's default
+    hook interval is 5 minutes, which would make every incident assertion wait
+    minutes and sit close to the test timeouts. Shortening it to 60s keeps the
+    suite both faster and more reliable; it does not change the behaviour
+    under test, only how often the loop is ticked.
+    """
+    with jubilant.temp_model(
+        keep=keep_models,
+        config={"update-status-hook-interval": "60s"},
+    ) as juju:
         juju.wait_timeout = 10 * 60
         yield juju
         if keep_models:

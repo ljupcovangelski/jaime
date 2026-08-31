@@ -38,12 +38,18 @@ jobs:
       fail-fast: false
       matrix:
         suite:
+          # `path` is explicit per suite. The shared job must target
+          # tests/unit, not tests/, or it also collects tests/integration,
+          # whose dependencies are deliberately not installed here.
           - name: shared
             dir: .
+            path: tests/unit/
           - name: machine
             dir: charms/machine
+            path: tests/
           - name: k8s
             dir: charms/k8s
+            path: tests/
     steps:
       - uses: actions/checkout@v4
 
@@ -61,7 +67,7 @@ jobs:
       # charm-local module.
       - name: Run ${{ matrix.suite.name }} suite
         working-directory: ${{ matrix.suite.dir }}
-        run: pytest tests/ -v
+        run: pytest ${{ matrix.suite.path }} -v
 
   pack:
     name: Pack charms
@@ -95,12 +101,11 @@ jobs:
   integration:
     name: Integration (machine)
     runs-on: ubuntu-latest
-    # Integration tests bootstrap a real controller and take tens of minutes,
-    # so they are opt-in per PR via the `integration` label, and always run on
-    # pushes to main.
-    if: >-
-      github.event_name == 'push' ||
-      contains(github.event.pull_request.labels.*.name, 'integration')
+    # Runs on pull requests as well as pushes to main, so the suite is
+    # validated before merge rather than after. It bootstraps a real LXD
+    # controller and takes tens of minutes, hence the long timeout and the
+    # gate behind pack.
+    timeout-minutes: 90
     needs: [pack]
     steps:
       - uses: actions/checkout@v4
