@@ -1,0 +1,137 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A newer push to the same branch supersedes an in-flight run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: ruff check
+        run: ruff check --output-format=github .
+
+  unit:
+    name: Unit (${{ matrix.suite.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      # Report every failing suite in one run rather than stopping at the first.
+      fail-fast: false
+      matrix:
+        suite:
+          - name: shared
+            dir: .
+          - name: machine
+            dir: charms/machine
+          - name: k8s
+            dir: charms/k8s
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install test dependencies
+        run: pip install pytest pytest-cov "ops>=2.10.0"
+
+      # Each suite runs from its own directory so the matching pyproject.toml
+      # supplies the correct pythonpath. The shared suite deliberately sees
+      # only jaime-package, which proves the library does not depend on any
+      # charm-local module.
+      - name: Run ${{ matrix.suite.name }} suite
+        working-directory: ${{ matrix.suite.dir }}
+        run: pytest tests/ -v
+
+  pack:
+    name: Pack charms
+    runs-on: ubuntu-latest
+    # Packing needs LXD and is far slower than the unit suites, so it only
+    # runs once linting and every unit suite are green.
+    needs: [lint, unit]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install charmcraft
+        run: sudo snap install charmcraft --classic
+
+      - name: Initialise LXD
+        run: |
+          sudo snap refresh lxd || sudo snap install lxd
+          sudo lxd init --auto
+          sudo usermod -aG lxd "$USER"
+
+      - name: Pack both charms
+        run: sg lxd -c "make pack-all"
+
+      - name: Upload charm artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: charms
+          path: dist/*.charm
+          if-no-files-found: error
+          retention-days: 14
+
+  integration:
+    name: Integration (machine)
+    runs-on: ubuntu-latest
+    # Integration tests bootstrap a real controller and take tens of minutes,
+    # so they are opt-in per PR via the `integration` label, and always run on
+    # pushes to main.
+    if: >-
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'integration')
+    needs: [pack]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Download packed charms
+        uses: actions/download-artifact@v4
+        with:
+          name: charms
+          path: dist
+
+      - name: Set up LXD and bootstrap Juju
+        # Pinned to a SHA rather than a moving branch, so CI is reproducible
+        # and a third-party push cannot silently change what runs here.
+        # This is the commit main pointed at when the workflow was added;
+        # the published tags (1.0.0, 1.1.0) are far behind it.
+        uses: charmed-kubernetes/actions-operator@d8217ad61c15f746727a9d41563c13e9b9fe56e3
+        with:
+          provider: lxd
+
+      - name: Install integration dependencies
+        run: pip install -r tests/integration/requirements.txt
+
+      - name: Run machine integration suite
+        run: pytest tests/integration/test_machine.py tests/integration/test_flapping.py -v
+        env:
+          JAIME_TEST_PROVIDER: ${{ vars.JAIME_TEST_PROVIDER }}
+          # Optional. When unset, provider-dependent tests skip and the
+          # non-AI fallback path is exercised instead.
+          JAIME_TEST_API_TOKEN: ${{ secrets.JAIME_TEST_API_TOKEN }}
