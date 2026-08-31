@@ -4,7 +4,6 @@ import uuid
 
 import pytest
 
-
 from jaime.incident import Incident, Suggestion, UsageMetadata
 
 

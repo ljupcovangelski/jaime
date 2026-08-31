@@ -2,9 +2,64 @@
 requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
+# Root pytest config covers the shared library unit suite only. The per-charm
+# suites live in charms/machine/tests and charms/k8s/tests and are run from
+# their own directories, where each charm's pyproject.toml supplies the
+# substrate-specific pythonpath. Use `tox` or `make test` to run all three.
+#
+# tests/integration is deliberately NOT in testpaths: those tests drive a real
+# Juju controller and must never run as part of the default unit sweep. Run
+# them explicitly with `make integration` or `tox -e integration`.
+#
+# Note the pythonpath deliberately omits every charm src/ directory: the
+# shared suite must import only from jaime-package, which proves the shared
+# library has no dependency on charm-local modules.
 [tool.pytest.ini_options]
-testpaths = ["charms/machine/tests"]
-pythonpath = ["charms/machine/src", "jaime-package"]
+testpaths = ["tests/unit"]
+pythonpath = ["jaime-package"]
+markers = [
+    "integration: requires a live Juju controller (deselected by default)",
+]
 
 [tool.coverage.run]
-source = ["charms/machine/src", "jaime-package"]
+source = ["jaime-package"]
+
+[tool.ruff]
+# 120 matches the width this codebase already writes to. Chosen deliberately
+# over the more common 100 so enabling the rule does not require rewrapping
+# working code; tighten later if the team wants to.
+line-length = 120
+target-version = "py310"
+extend-exclude = [
+    ".vendored",
+    "_jaime-package",
+    "build",
+]
+
+[tool.ruff.lint]
+# Start deliberately narrow so the first CI run is actionable rather than a
+# wall of violations. Tighten incrementally.
+select = [
+    "E",  # pycodestyle errors
+    "F",  # pyflakes
+    "W",  # pycodestyle warnings
+    "I",  # isort
+]
+
+[tool.ruff.lint.isort]
+# `jaime` resolves from jaime-package (and, inside a charm, from that charm's
+# src/jaime). Declaring it first-party keeps it in its own group below the
+# third-party imports such as `ops` and `yaml`.
+known-first-party = ["jaime"]
+
+[tool.ruff.lint.per-file-ignores]
+# Charm entrypoints import from a src/ dir injected onto sys.path at runtime,
+# so module-level imports cannot always come first.
+"charms/*/src/charm.py" = ["E402"]
+# Tests embed fixture data — sample log lines, expected report bodies — as
+# literals. Wrapping those would change or obscure the data under test, so
+# line length is not enforced in test files.
+"charms/*/tests/*.py" = ["E402", "E501"]
+"tests/unit/*.py" = ["E402", "E501"]
+"tests/unit/providers/*.py" = ["E402", "E501"]
+"tests/integration/*.py" = ["E402", "E501"]
