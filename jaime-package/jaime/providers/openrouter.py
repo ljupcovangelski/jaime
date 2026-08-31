@@ -3,11 +3,11 @@
 import json
 import logging
 import traceback
-import urllib.request
 import urllib.error
+import urllib.request
 
-from jaime.providers.base import AIProvider
 from jaime.incident import UsageMetadata
+from jaime.providers.base import AIProvider
 
 logger = logging.getLogger(__name__)
 

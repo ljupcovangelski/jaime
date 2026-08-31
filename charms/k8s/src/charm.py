@@ -16,18 +16,18 @@ from ops.charm import CharmBase
 from ops.main import main
 from ops.model import ActiveStatus, BlockedStatus, MaintenanceStatus
 
-from jaime.core import CoreMixin
+from jaime.collector import collect_context
 from jaime.controller import (
-    ControllerError,
     ControllerAuthError,
+    ControllerError,
     JujuControllerClient,
     agent_conf_path,
-    parse_agent_conf,
     extract_unit_statuses,
+    parse_agent_conf,
 )
-from jaime.principal import StatusTracker
+from jaime.core import CoreMixin
 from jaime.incident import Incident
-from jaime.collector import collect_context
+from jaime.principal import StatusTracker
 
 logger = logging.getLogger(__name__)
 

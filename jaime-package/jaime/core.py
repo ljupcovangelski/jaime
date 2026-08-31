@@ -24,8 +24,8 @@ from ops.model import ActiveStatus, BlockedStatus, MaintenanceStatus, WaitingSta
 
 from jaime.incident import Incident, Suggestion
 from jaime.logging import write_event
-from jaime.suggest import run_suggest, run_act
 from jaime.report import generate_report
+from jaime.suggest import run_act, run_suggest
 
 logger = logging.getLogger(__name__)
 

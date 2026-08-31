@@ -14,7 +14,7 @@ import re
 import shlex
 import subprocess
 
-from jaime.incident import Suggestion, UsageMetadata
+from jaime.incident import Suggestion
 
 logger = logging.getLogger(__name__)
 

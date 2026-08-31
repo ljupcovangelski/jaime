@@ -7,10 +7,9 @@ covers only what is specific to the k8s charm.
 
 import unittest.mock as mock
 
+from charm import JaimeK8sCharm
 from ops.model import ActiveStatus, MaintenanceStatus
 from ops.testing import Harness
-
-from charm import JaimeK8sCharm
 
 
 def _make_harness(config_overrides=None):
