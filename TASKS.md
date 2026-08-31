@@ -1,10 +1,15 @@
 # Jaime Tasks
 
-Phases 0 to 3 are implemented. Phases 4 to 6 are the active plan.
+Phases 0 to 3.5 are implemented. Phases 4 to 6 are the active plan.
 
 Later phases and unscoped ideas live in `ARCHITECTURE.md`, which is the roadmap
 source of truth. They are deliberately not listed here until they are worth
 breaking into tasks.
+
+Ordering note: 5.1 (CI) runs ahead of Phase 4 because it is cheap and guards
+every change after it. 5.2 depends on 4.1, since integration tests cannot
+deploy reliably until packaging stops destroying artifacts. 5.3 depends on
+4.2, 4.4 and 4.6.
 
 ## 0. Phase 0 — Repository bootstrap
 
@@ -261,16 +266,55 @@ Support both a machine subordinate charm and a standalone Kubernetes charm from 
 - [x] [test] Unit test `CoreMixin` once against a dummy charm instead of duplicating per charm
 - [x] [test] Keep both suites green (machine 226 tests, k8s 55 tests)
 
+## 3.5. Phase 3.5 — Test and tooling hygiene
+
+Done before CI so the workflow encodes the intended layout rather than the
+leftovers of the Phase 3 restructure.
+
+### 3.5.1. Repository cleanup
+
+- [x] [test] Delete the stale root `src/` and `tests/` directories left by the Phase 3 restructure
+- [x] [test] Keep `charms/*/.vendored/` — it feeds each charm's pytest `pythonpath`, while the Makefile's `_jaime-package` copy feeds charmcraft
+
+### 3.5.2. Test layout
+
+- [x] [test] Adopt the `tests/unit/` and `tests/integration/` layout `AGENTS.md` documents
+- [x] [test] Move shared-library tests out of `charms/machine/tests/` into `tests/unit/`
+- [x] [test] Move `test_controller.py` and `test_core.py` out of `charms/k8s/tests/` into `tests/unit/`
+- [x] [test] Leave only genuinely charm-specific tests under `charms/*/tests/`
+- [x] [test] Make `test_core.py` declare its config inline instead of implicitly inheriting `charms/k8s/config.yaml` from the working directory
+
+### 3.5.3. Test entrypoints
+
+- [x] [test] Fix root `tox.ini`, which pointed at a `tests/` and `src/` that no longer existed
+- [x] [test] Fix root `pyproject.toml`, whose `testpaths` silently skipped the k8s suite
+- [x] [test] Add `shared`, `machine`, `k8s`, `lint` and `integration` tox environments
+- [x] [test] Rewrite `scripts/test.sh` to run all three suites and report per-suite results
+- [x] [test] Keep `tests/integration` out of every default test path
+
+### 3.5.4. Lint
+
+- [x] [project] Add `ruff` config to the root `pyproject.toml`
+- [x] [project] Set `line-length = 120` to match existing style rather than force a rewrap
+- [x] [project] Exempt test files from `E501`, since they embed fixture data as literals
+- [x] [python] Fix the findings: unused imports, unsorted imports, ambiguous `l` identifiers, two unused locals, one misplaced import block in `charms/machine/src/jaime/collector.py`
+
+### 3.5.5. Coverage gap
+
+- [x] [test] Add `tests/unit/providers/test_openrouter.py`; the provider had no tests at all
+
 ## 4. Phase 4 — Improving user experience
 
 Make both charms pleasant to build, deploy and read output from.
 
 ### 4.1. Build and packaging
 
-- [ ] [project] Make `pack-machine` and `pack-k8s` write distinct artifacts that never delete each other's
-- [ ] [project] Add `pack-all` producing both charms in one run
-- [ ] [project] Stop `clean` from wiping `.venv/` and `.tox/`; split into `clean` and `distclean`
-- [ ] [project] Fix the `deploy` and `remove` targets: machine-only assumptions and the `PRINCIPLE_CHARM` typo
+- [x] [project] Make `pack-machine` and `pack-k8s` write distinct artifacts that never delete each other's
+- [x] [project] Add `pack-all` producing both charms in one run
+- [x] [project] Stop `clean` from wiping `.venv/` and `.tox/`; split into `clean` and `distclean`
+- [x] [project] Fix the `deploy` and `remove` targets: machine-only assumptions and the `PRINCIPLE_CHARM` typo
+- [x] [project] Build into `dist/` so artifacts are collectable by CI
+- [x] [project] Add `deploy-k8s` and `remove-k8s`, and validate `PRINCIPAL_CHARM` before packing
 
 ### 4.2. Kubernetes deployment guidance
 
@@ -282,6 +326,12 @@ Make both charms pleasant to build, deploy and read output from.
 
 ### 4.3. Machine charm controller access
 
+**Deferred.** This reverses the standing `AGENTS.md` rule that the machine
+charm must not talk directly to the Juju controller API, and adds a
+credentials surface to a charm that currently needs none. Write a design note
+covering the tradeoff before implementing.
+
+- [ ] [project] Design note: hook tools vs controller API, credential handling, what co-located subordinate monitoring actually requires
 - [ ] [charm] Read unit status from the Juju controller API in the machine charm
 - [ ] [charm] Monitor co-located subordinate units on the same machine
 - [ ] [docs] Update the `AGENTS.md` rule and the `ARCHITECTURE.md` statement that this reverses
@@ -297,19 +347,42 @@ Make both charms pleasant to build, deploy and read output from.
 - [ ] [python] Add further pod and container detail to k8s incident reports
 - [ ] [python] Bound every addition by time, lines or bytes and keep it within `max-context-lines`
 
+### 4.6. Kubernetes diagnostics plan parity
+
+The machine charm generates an AI diagnostics plan on `principal-relation-joined`
+and passes it to its collector. The k8s charm does neither: `collect_context`
+in `charms/k8s/src/jaime/collector.py` accepts a `diagnostics_plan` argument and
+ignores it, and `charms/k8s/config.yaml` has no `diagnostics` option at all. So
+k8s pod collection is a fixed set with no plan-driven extensibility. Promoted
+from the `ARCHITECTURE.md` ideas list because it gates the CharmHub release.
+
+- [ ] [charm] Add a `diagnostics` config option to `charms/k8s/config.yaml`
+- [ ] [charm] Generate a diagnostics plan for watched applications and persist it
+- [ ] [python] Pass the plan into the k8s `collect_context` and honour it
+- [ ] [test] Cover plan-driven k8s collection, matching the machine charm's tests
+
 ## 5. Phase 5 — CI/CD, integration tests and CharmHub release
 
 ### 5.1. Continuous integration
 
-- [ ] [test] Run both unit suites and lint on every pull request
+- [x] [test] Run both unit suites and lint on every pull request
+- [x] [test] Run all three suites — shared, machine, k8s — as a matrix
+- [x] [test] Pack both charms on CI and upload them as artifacts
+- [x] [test] Gate packing behind lint and unit so slow LXD work only runs when the fast checks pass
 
 ### 5.2. Integration tests
 
-- [ ] [test] Deploy both charms, inject a fault, assert incident → report → suggestion
-- [ ] [test] Cover the flapping-workload case that unit tests now guard
-- [ ] [test] Cover missing Kubernetes RBAC and rejected controller credentials
+- [x] [test] Deploy both charms, inject a fault, assert incident → report → suggestion
+- [x] [test] Cover the flapping-workload case that unit tests now guard
+- [x] [test] Cover missing Kubernetes RBAC and rejected controller credentials
+- [x] [test] Assert the API token never reaches reports or the audit log
+- [x] [test] Assert the non-AI fallback still produces a report
+- [ ] [test] Run the integration suite against a real controller and fix what the first run surfaces
+- [ ] [test] Add the k8s integration job to CI once a MicroK8s runner is available
 
 ### 5.3. Release
+
+Gated on 4.2, 4.4 and 4.6.
 
 - [ ] [project] Publish both charms to CharmHub with tracks and channels
 - [ ] [docs] Per-charm CharmHub page content

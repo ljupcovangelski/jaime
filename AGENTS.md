@@ -51,7 +51,7 @@ Other agents may review the work, but ownership should remain clear.
 The following commit types are used throughout the project:
 
 * `feature` — new functionality
-* `bug` — defect fix
+* `fix` — defect fix
 * `change` — refactoring, architecture changes, configuration changes, non-functional improvements
 * `docs` — documentation-only changes
 
@@ -69,7 +69,7 @@ Examples:
 [charm] feature: Add subordinate charm skeleton
 [charm] change: Add principal status monitoring
 [python] feature: Add JSONL audit logger
-[python] bug: Fix cooldown logic
+[python] fix: Fix cooldown logic
 [test] feature: Add incident timeout tests
 [docs] docs: Add configuration reference
 ```

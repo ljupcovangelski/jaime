@@ -1,5 +1,29 @@
 # Changelog
 
+## [Unreleased]
+
+### Changes
+
+- Adopt the `tests/unit` and `tests/integration` layout documented in `AGENTS.md`. Shared-library tests move out of `charms/machine/tests/` and `charms/k8s/tests/` into `tests/unit/`, leaving only genuinely charm-specific tests in the charm suites. `tests/unit` sees only `jaime-package` on its `pythonpath`, which proves the shared library does not depend on any charm-local module
+- Make the `CoreMixin` test declare its config inline instead of implicitly inheriting `charms/k8s/config.yaml` from the working directory
+- Repair the root test entrypoints. `tox.ini` pointed at a `tests/` and `src/` that no longer existed after the Phase 3 restructure, and the root `pyproject.toml` `testpaths` silently skipped the entire k8s suite. `tox` and `scripts/test.sh` now run all three suites
+- Add `ruff` lint configuration with `line-length = 120`, chosen to match existing style rather than force a rewrap. Test files are exempt from `E501` because they embed fixture data as literals
+- Add a GitHub Actions CI workflow: lint plus a three-suite unit matrix on every pull request, then charm packing gated behind them, with artifacts uploaded
+- Build both charms into `dist/`. `pack-machine` and `pack-k8s` no longer delete each other's artifacts, and `pack-all` produces both in one run
+- Split `make clean` from `make distclean` so cleaning no longer destroys `.venv/` and `.tox/`
+- Fix the `deploy` and `remove` Makefile targets: correct the `PRINCIPLE_CHARM` typo to `PRINCIPAL_CHARM`, validate it before doing any packing work, and add `deploy-k8s` and `remove-k8s`
+- Remove the stale root `src/` and `tests/` directories left behind by the Phase 3 restructure
+
+### Features
+
+- Add an integration test suite (`tests/integration/`) built on `jubilant`, covering the machine incident chain (fault → incident → report → suggestion), the flapping-workload case, recovery, the non-AI fallback path, and for Kubernetes both documented failure modes: rejected controller credentials and missing RBAC. Includes assertions that the API token never reaches a report or the audit log. Excluded from every default test path; run with `make integration`
+- Add `tests/unit/providers/test_openrouter.py`. The OpenRouter provider previously had no test coverage at all
+
+### Bug fixes
+
+- Fix a misplaced import block in `charms/machine/src/jaime/collector.py`, where `jaime.logutils` was imported halfway down the file
+- Rename ambiguous `l` loop identifiers to `line` across the collectors and report generator
+
 ## [0.0.7] - 2026-08-29
 
 `version: "0.0.7"` was introduced alongside the Kubernetes charm, so this entry
@@ -29,7 +53,7 @@ covers everything released since 0.0.6.
 - Report Juju's raw status timestamp as `status_since` in the incident events, alongside the Jaime-anchored `first_seen`
 - Add `status-since` to the `show-status` action output
 - Remove dead code: the Ops tracing report section and the unused `UsageMetadata.__add__`
-- Sync `ARCHITECTURE.md` and `TASKS.md` with the implemented state. Restructure the roadmap into eight phases, splitting AI-assisted diagnosis (Phase 2, implemented) from assisted remediation (Phase 4, future) and inserting Kubernetes/multi-substrate support as Phase 3
+- Sync `ARCHITECTURE.md` and `TASKS.md` with the implemented state. Restructure the roadmap into seven phases, splitting AI-assisted diagnosis (Phase 2, implemented) from assisted remediation (Phase 7, future) and inserting Kubernetes/multi-substrate support as Phase 3
 - Document a two-signal health model in `ARCHITECTURE.md`: Juju workload status is the current incident trigger, but a workload can be broken while Juju still reports `active`, so workload-health checks may trigger incidents in future
 
 ### Bug fixes
