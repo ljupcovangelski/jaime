@@ -13,7 +13,6 @@ from jaime.controller import (
     parse_agent_conf,
 )
 
-
 AGENT_CONF = """\
 # format 2.0
 tag: unit-jaime-k8s-0
@@ -64,6 +63,7 @@ class TestJujuControllerClient:
         })
         result = client.login("jaime-observer", "secret")
         sent = json.loads(client._ws.send.call_args[0][0])
+        assert result["user-info"]["identity"] == "user-jaime-observer"
         assert sent["type"] == "Admin"
         assert sent["request"] == "Login"
         assert sent["params"]["auth-tag"] == "user-jaime-observer"

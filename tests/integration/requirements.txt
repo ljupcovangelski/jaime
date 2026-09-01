@@ -1,0 +1,6 @@
+# Dependencies for the integration suite (tests/integration).
+#
+# Kept separate from the unit suites so the fast CI path never installs a
+# Juju client. Run with `make integration` against a bootstrapped controller.
+pytest>=8.0
+jubilant>=1.0

@@ -4,7 +4,7 @@ import unittest.mock as mock
 
 import pytest
 
-
+from jaime.incident import Suggestion, UsageMetadata
 from jaime.suggest import (
     build_suggest_prompt,
     execute_command,
@@ -12,7 +12,6 @@ from jaime.suggest import (
     run_act,
     run_suggest,
 )
-from jaime.incident import Suggestion, UsageMetadata
 
 
 def _make_provider(response_text: str, usage: UsageMetadata | None = None):

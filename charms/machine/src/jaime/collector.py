@@ -13,6 +13,9 @@ import shlex
 import sqlite3
 import subprocess
 
+from jaime.logutils import deduplicate_lines as _deduplicate_lines
+from jaime.logutils import tail_lines as _tail_lines
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_LOG_WINDOW_MINUTES = 120
@@ -130,11 +133,6 @@ def collect_tracing_events(
     events.sort(key=lambda e: e["timestamp"])
     return events[-max_events:]
 
-from jaime.logutils import (
-    deduplicate_lines as _deduplicate_lines,
-    tail_lines as _tail_lines,
-)
-
 
 def collect_unit_logs(
     unit_name: str,
@@ -218,18 +216,18 @@ def collect_unit_logs(
 
 def collect_systemd_failed() -> list[str]:
     output = _run(["systemctl", "--failed", "--no-legend", "--plain"])
-    lines = [l.strip() for l in output.splitlines() if l.strip()]
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
     return lines
 
 
 def collect_disk_usage() -> list[str]:
     output = _run(["df", "-h", "--output=source,size,used,avail,pcent,target"])
-    return [l.rstrip() for l in output.splitlines() if l.strip()]
+    return [line.rstrip() for line in output.splitlines() if line.strip()]
 
 
 def collect_memory_summary() -> list[str]:
     output = _run(["free", "-h"])
-    return [l.rstrip() for l in output.splitlines() if l.strip()]
+    return [line.rstrip() for line in output.splitlines() if line.strip()]
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +276,7 @@ def _collect_processes(plan_processes: list[dict]) -> list[dict]:
     for proc in plan_processes:
         name = proc.get("name", "")
         output = _run(["pgrep", "-f", name])
-        count = len([l for l in output.splitlines() if l.strip()]) if output else 0
+        count = len([line for line in output.splitlines() if line.strip()]) if output else 0
         expected_min = proc.get("expected_min_count", 1)
         expected_max = proc.get("expected_max_count", 1)
         if count < expected_min:
@@ -387,13 +385,13 @@ def _collect_broad_processes(max_lines: int = 100) -> list[str]:
 
 def _collect_broad_ports() -> list[str]:
     output = _run(["ss", "-tlnp"])
-    return [l.rstrip() for l in output.splitlines() if l.strip()]
+    return [line.rstrip() for line in output.splitlines() if line.strip()]
 
 
 def collect_ss_connections(max_lines: int = 100) -> list[str]:
     """Collect all listening and established TCP/UDP connections with process info."""
     output = _run(["sudo", "ss", "-antlup"])
-    lines = [l.rstrip() for l in output.splitlines() if l.strip()]
+    lines = [line.rstrip() for line in output.splitlines() if line.strip()]
     return lines[-max_lines:] if len(lines) > max_lines else lines
 
 
@@ -408,15 +406,15 @@ def collect_firewall_rules() -> dict:
 
     iptables_out = _run(["iptables", "-L", "-n"])
     if iptables_out:
-        result["iptables"] = [l.rstrip() for l in iptables_out.splitlines() if l.strip()]
+        result["iptables"] = [line.rstrip() for line in iptables_out.splitlines() if line.strip()]
 
     ufw_out = _run(["ufw", "status", "verbose"])
     if ufw_out:
-        result["ufw"] = [l.rstrip() for l in ufw_out.splitlines() if l.strip()]
+        result["ufw"] = [line.rstrip() for line in ufw_out.splitlines() if line.strip()]
 
     nft_out = _run(["nft", "list", "ruleset", "ip"])
     if nft_out:
-        result["nftables"] = [l.rstrip() for l in nft_out.splitlines() if l.strip()]
+        result["nftables"] = [line.rstrip() for line in nft_out.splitlines() if line.strip()]
 
     return result
 

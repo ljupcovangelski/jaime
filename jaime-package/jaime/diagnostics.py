@@ -1,9 +1,8 @@
 """Diagnostics plan generation, validation, and persistence."""
 
+import datetime
 import json
 import os
-import datetime
-
 
 DIAGNOSTICS_SCHEMA = {
     "type": "object",

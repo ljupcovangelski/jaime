@@ -8,6 +8,7 @@ in suggest/act mode. It does not contain LLM output.
 import datetime
 import logging
 import os
+
 import yaml
 
 from jaime.logutils import deduplicate_lines
@@ -101,8 +102,8 @@ def _append_section_summary(lines: list[str], workload: str,
     # cannot push the causal error out of the summary.
     unit_logs = context.get("unit_logs", [])
     error_lines = [
-        l for l in unit_logs
-        if "ERROR" in l.upper() or "WARNING" in l.upper()
+        line for line in unit_logs
+        if "ERROR" in line.upper() or "WARNING" in line.upper()
     ]
     error_lines = deduplicate_lines(error_lines)[-10:]
     if error_lines:
@@ -305,7 +306,7 @@ def _append_section_disk(lines: list[str], context: dict) -> None:
     if disk:
         # Filter out snap mount lines — they always show 100% and are not
         # relevant to workload disk health.
-        filtered = [l for l in disk if "/snap/" not in l]
+        filtered = [line for line in disk if "/snap/" not in line]
         _append(lines, ["```", *filtered, "```"])
     else:
         _append(lines, ["_Not available._"])
@@ -345,7 +346,10 @@ def _append_section_memory(lines: list[str], context: dict) -> None:
 def _append_section_logs(lines: list[str], context: dict) -> None:
     unit_logs = context.get("unit_logs", [])
     _append(lines, ["## Recent unit logs"])
-    _append(lines, ["_Showing only lines matching `error` or `warning` (case-insensitive), with a context window around the last match._"])
+    _append(lines, [
+        "_Showing only lines matching `error` or `warning` (case-insensitive), "
+        "with a context window around the last match._"
+    ])
     _append(lines, ["_Logs are in chronological order._"])
     if unit_logs:
         _append(lines, ["```", *unit_logs, "```"])

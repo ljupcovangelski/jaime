@@ -2,8 +2,6 @@
 
 import unittest.mock as mock
 
-import pytest
-
 from ops.charm import CharmBase
 from ops.model import ActiveStatus, BlockedStatus
 from ops.testing import Harness
@@ -22,8 +20,44 @@ class _DummyCharm(CoreMixin, CharmBase):
         self.framework.observe(self.on.config_changed, self._on_config_changed)
 
 
+# Declared inline rather than read from either charm's config.yaml. CoreMixin
+# is substrate-independent, so its test must not depend on a particular
+# charm's packaging; this also keeps the suite runnable from the repo root.
+# Only the options CoreMixin itself reads are listed.
+_SHARED_CONFIG_YAML = """
+options:
+  mode:
+    type: string
+    default: observe
+  provider:
+    type: string
+    default: none
+  model:
+    type: string
+    default: ""
+  api-token:
+    type: string
+    default: ""
+  watch-statuses:
+    type: string
+    default: "error,blocked"
+  failure-timeout-minutes:
+    type: int
+    default: 5
+  cooldown-minutes:
+    type: int
+    default: 30
+  report-dir:
+    type: string
+    default: /var/log/jaime/reports
+  audit-log-path:
+    type: string
+    default: /var/log/jaime/events.jsonl
+"""
+
+
 def _make_harness(config_overrides=None):
-    h = Harness(_DummyCharm)
+    h = Harness(_DummyCharm, config=_SHARED_CONFIG_YAML)
     h.begin()
     if config_overrides:
         h.update_config(config_overrides)

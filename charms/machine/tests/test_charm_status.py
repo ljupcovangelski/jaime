@@ -1,15 +1,15 @@
 """Unit tests for _log_principal_status in JaimeCharm."""
 
-from ops.testing import Harness
-from ops.model import ActiveStatus, WaitingStatus
-from charm import JaimeCharm
-from jaime.principal import StatusTracker
-
 import datetime
 import json
 import logging
 import unittest.mock as mock
 
+from charm import JaimeCharm
+from ops.model import ActiveStatus, WaitingStatus
+from ops.testing import Harness
+
+from jaime.principal import StatusTracker
 
 
 def _try_json(s, default=None):

@@ -6,22 +6,22 @@ import json
 import logging
 
 from ops.charm import CharmBase
+from ops.hookcmds import goal_state
 from ops.main import main
 from ops.model import ActiveStatus, BlockedStatus, MaintenanceStatus
 
+from jaime.collector import collect_context
 from jaime.core import CoreMixin
 from jaime.diagnostics import (
-    validate_diagnostics,
     build_prompt,
-    write_diagnostics_file,
-    read_diagnostics_file,
     make_empty_plan,
+    read_diagnostics_file,
+    validate_diagnostics,
+    write_diagnostics_file,
 )
-from jaime.principal import StatusTracker
 from jaime.incident import Incident
-from jaime.collector import collect_context
 from jaime.logging import write_event
-from ops.hookcmds import goal_state
+from jaime.principal import StatusTracker
 
 logger = logging.getLogger(__name__)
 

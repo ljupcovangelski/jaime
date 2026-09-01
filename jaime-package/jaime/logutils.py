@@ -22,7 +22,7 @@ def filter_error_context(lines: list[str], max_lines: int,
     a wider fetched window, so the error that triggered the incident is never
     lost. Falls back to the last ``max_lines`` raw lines when nothing matches.
     """
-    matched = [i for i, l in enumerate(lines) if _ERROR_RE.search(l)]
+    matched = [i for i, line in enumerate(lines) if _ERROR_RE.search(line)]
     if not matched:
         return lines[-max_lines:]
     include = set()

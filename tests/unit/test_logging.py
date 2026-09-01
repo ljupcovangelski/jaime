@@ -3,9 +3,6 @@
 import json
 import os
 
-import pytest
-
-
 from jaime.logging import write_event
 
 

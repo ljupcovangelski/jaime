@@ -3,10 +3,8 @@
 import datetime
 import unittest.mock as mock
 
-import pytest
-
-from jaime.k8s_api import K8sApiClient
 from jaime.collector import collect_context
+from jaime.k8s_api import K8sApiClient
 
 
 def _make_client():

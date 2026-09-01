@@ -92,7 +92,7 @@ class K8sApiClient:
         result = self._request(path, params)
         if not isinstance(result, str):
             return []
-        return [l.rstrip() for l in result.splitlines() if l.strip()]
+        return [line.rstrip() for line in result.splitlines() if line.strip()]
 
     def get_pod_events(self, pod_name: str, limit: int = 50) -> list[str]:
         """Return Kubernetes events for a pod as formatted text lines."""

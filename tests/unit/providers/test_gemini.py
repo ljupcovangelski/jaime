@@ -1,10 +1,10 @@
 import json
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from jaime.providers.gemini import GeminiProvider
 from jaime.incident import UsageMetadata
+from jaime.providers.gemini import GeminiProvider
 
 
 def _mock_urlopen_response(data_bytes):

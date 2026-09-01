@@ -2,22 +2,17 @@
 
 import datetime
 import json
-import os
 import unittest.mock as mock
 
-import pytest
-
-
 import jaime.collector as jcollector
-
 from jaime.collector import (
+    _tail_lines,
     collect_context,
     collect_disk_usage,
     collect_memory_summary,
     collect_systemd_failed,
     collect_tracing_events,
     collect_unit_logs,
-    _tail_lines,
 )
 
 
@@ -72,7 +67,7 @@ class TestCollectUnitLogs:
         with mock.patch.object(jcollector, "_JUJU_LOG_DIR", str(tmp_path)):
             result = collect_unit_logs("postgresql/0", log_window_minutes=60)
         assert isinstance(result, list)
-        assert any("some error" in l for l in result)
+        assert any("some error" in line for line in result)
 
     def test_missing_log_returns_empty(self, tmp_path):
         import jaime.collector as jcollector
@@ -104,8 +99,8 @@ class TestCollectUnitLogs:
         import jaime.collector as jcollector
         with mock.patch.object(jcollector, "_JUJU_LOG_DIR", str(tmp_path)):
             result = collect_unit_logs("postgresql/0", log_window_minutes=60)
-        assert not any("old line" in l for l in result)
-        assert any("recent line" in l for l in result)
+        assert not any("old line" in line for line in result)
+        assert any("recent line" in line for line in result)
 
     def test_from_time_anchors_to_incident_start(self, tmp_path):
         """Logs before from_time - buffer should be excluded."""
@@ -130,9 +125,9 @@ class TestCollectUnitLogs:
                 "postgresql/0", log_window_minutes=60,
                 from_time=from_time, buffer_minutes=5,
             )
-        assert not any("pre-incident noise" in l for l in result)
-        assert any("near incident start" in l for l in result)
-        assert any("incident error" in l for l in result)
+        assert not any("pre-incident noise" in line for line in result)
+        assert any("near incident start" in line for line in result)
+        assert any("incident error" in line for line in result)
 
     def test_from_time_not_capped_by_log_window(self, tmp_path):
         """from_time anchors the window without being capped by log_window."""
@@ -150,8 +145,8 @@ class TestCollectUnitLogs:
                 from_time=from_time, buffer_minutes=5,
             )
         # Both lines are within from_time - buffer (2h5m ago), so both are included
-        assert any("old line" in l for l in result)
-        assert any("recent line" in l for l in result)
+        assert any("old line" in line for line in result)
+        assert any("recent line" in line for line in result)
 
     def test_filters_to_error_warning_level(self, tmp_path):
         """Only lines with ERROR or WARNING level are matched when context_window=0."""
@@ -169,13 +164,13 @@ class TestCollectUnitLogs:
         with mock.patch.object(jcollector, "_JUJU_LOG_DIR", str(tmp_path)):
             result = collect_unit_logs("postgresql/0", log_window_minutes=60, context_window=0)
         # ERROR and WARNING lines should be included
-        assert any("some warning line" in l for l in result)
-        assert any("some error line" in l for l in result)
+        assert any("some warning line" in line for line in result)
+        assert any("some error line" in line for line in result)
         # INFO and DEBUG lines should NOT be included (context_window=0)
-        assert not any("some info line" in l for l in result)
-        assert not any("some debug line" in l for l in result)
+        assert not any("some info line" in line for line in result)
+        assert not any("some debug line" in line for line in result)
         # INFO lines containing "error" in message body but INFO level should NOT be matched
-        assert not any("awaiting error resolution" in l for l in result)
+        assert not any("awaiting error resolution" in line for line in result)
 
     def test_no_error_warning_matches_falls_back(self, tmp_path):
         """When no lines match ERROR/WARNING level, all recent lines are returned."""
@@ -189,8 +184,8 @@ class TestCollectUnitLogs:
         import jaime.collector as jcollector
         with mock.patch.object(jcollector, "_JUJU_LOG_DIR", str(tmp_path)):
             result = collect_unit_logs("postgresql/0", log_window_minutes=60)
-        assert any("line one" in l for l in result)
-        assert any("line two" in l for l in result)
+        assert any("line one" in line for line in result)
+        assert any("line two" in line for line in result)
 
     def test_context_window_around_last_match(self, tmp_path):
         """Lines within context_window of the last match are included."""
@@ -231,14 +226,14 @@ class TestCollectUnitLogs:
         with mock.patch.object(jcollector, "_JUJU_LOG_DIR", str(tmp_path)):
             result = collect_unit_logs("postgresql/0", log_window_minutes=60, context_window=3)
         # The ERROR at index 15 should be included
-        assert any("connection to database lost" in l for l in result)
+        assert any("connection to database lost" in line for line in result)
         # Context window around index 15: indices 12-18
-        assert any("relation joined postgresql" in l for l in result)   # 12
-        assert any("querying application status" in l for l in result)  # 13
-        assert any("processing pending events" in l for l in result)    # 14
-        assert any("retrying failed hook" in l for l in result)         # 16
+        assert any("relation joined postgresql" in line for line in result)   # 12
+        assert any("querying application status" in line for line in result)  # 13
+        assert any("processing pending events" in line for line in result)    # 14
+        assert any("retrying failed hook" in line for line in result)         # 16
         # Line at index 11 (outside context_window) should not be included
-        assert not any("checking relation data" in l for l in result)   # 11
+        assert not any("checking relation data" in line for line in result)   # 11
 
     def test_context_window_does_not_exceed_bounds(self, tmp_path):
         """Context window at the start/end of recent lines doesn't go out of bounds."""
@@ -269,8 +264,8 @@ class TestCollectUnitLogs:
         import jaime.collector as jcollector
         with mock.patch.object(jcollector, "_JUJU_LOG_DIR", str(tmp_path)):
             result = collect_unit_logs("postgresql/0", log_window_minutes=60)
-        assert not any("old rolling line" in l for l in result)
-        assert any("new rolling line" in l for l in result)
+        assert not any("old rolling line" in line for line in result)
+        assert any("new rolling line" in line for line in result)
 
 
 class TestCollectSystemdFailed:
@@ -299,7 +294,7 @@ class TestCollectMemorySummary:
         output = "              total  used  free\nMem:           7.7G  6.1G  1.6G\n"
         with mock.patch("jaime.collector._run", return_value=output):
             result = collect_memory_summary()
-        assert any("Mem" in l for l in result)
+        assert any("Mem" in line for line in result)
 
 
 class TestCollectContext:
@@ -366,7 +361,6 @@ class TestCollectTracingEvents:
         ts_ns = int(datetime.datetime(2026, 7, 14, 10, 0, 0, tzinfo=datetime.timezone.utc).timestamp() * 1e9)
         data = _make_tracing_payload([("RelationBrokenEvent", "relation_broken", ""), ("ConfigChangedEvent", "config_changed", "")], ts_ns)
         db_path = self._make_db(tmp_path, [data])
-        tag = self._unit_tag("postgresql/0")
         with mock.patch("jaime.collector.sqlite3.connect", return_value=__import__("sqlite3").connect(db_path)):
             result = collect_tracing_events("postgresql/0")
         assert any(e["event"] == "RelationBrokenEvent" for e in result)

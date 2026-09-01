@@ -92,7 +92,17 @@ charms/k8s/src/
   charm.py                  k8s-specific charm
   jaime/collector.py        pod collection
   jaime/k8s_api.py          Kubernetes API client
+
+tests/unit/                 shared-library tests (imports only jaime-package)
+tests/integration/          live-controller tests (never in the default test path)
+charms/*/tests/             charm-specific tests only
 ```
+
+Tests are split by what they exercise, not by which charm happens to host them.
+`tests/unit/` sees only `jaime-package` on its `pythonpath`, which structurally
+proves the shared library has no dependency on any charm-local module.
+`CoreMixin` is tested once there against a dummy charm rather than duplicated
+into both charm suites.
 
 `jaime` is currently a **namespace package** — there is no `__init__.py` in either `jaime-package/jaime/` or `charms/*/src/jaime/`, so Python merges both directories into one `jaime` namespace at runtime. `from jaime.incident import Incident` resolves from the shared code and `from jaime.collector import collect_context` resolves from the charm-local module. At pack time the shared code is copied into the charm directory, because charmcraft's managed build container cannot follow a symlink out of the charm root.
 
@@ -647,13 +657,19 @@ Integrate AI providers to analyse persisted incident evidence, identify likely r
 
 Support both a machine subordinate charm and a standalone Kubernetes charm from one codebase, with substrate-independent behaviour factored into shared code.
 
+## Phase 3.5 – Test and tooling hygiene
+
+Adopt the `tests/unit` and `tests/integration` split, move shared-library tests out of the charm suites, repair the root test entrypoints left broken by the Phase 3 restructure, and add lint. Done before CI so the workflow encodes the intended layout rather than the leftovers.
+
 ## Phase 4 – Improving user experience
 
-Make both charms pleasant to build, deploy and read output from. Packaging that produces both artifacts without destroying either, Kubernetes deployment that tells the operator what it needs instead of failing silently, controller access so the machine charm can see co-located subordinates, consistent configuration across both charms, and richer incident reports.
+Make both charms pleasant to build, deploy and read output from. Packaging that produces both artifacts without destroying either, Kubernetes deployment that tells the operator what it needs instead of failing silently, consistent configuration across both charms, richer incident reports, and diagnostics-plan parity so the Kubernetes charm collects to a plan as the machine charm already does.
+
+Machine-charm controller access is deferred: it reverses a standing rule and needs a design note first.
 
 ## Phase 5 – CI/CD, integration tests and CharmHub release
 
-Run both unit suites on every change, add integration tests that deploy the charms and drive a real fault through to a suggestion, then publish to CharmHub with tracks and channels.
+Run all three unit suites and lint on every change, add integration tests that deploy the charms and drive a real fault through to a suggestion, then publish to CharmHub with tracks and channels. CI comes first in the implementation order, ahead of Phase 4, because it is cheap and guards everything after it.
 
 ## Phase 6 – Clustered operation for machine charms
 
@@ -674,7 +690,6 @@ Unordered and not committed. Recorded so the direction is not lost.
 - **Composite health model** — let workload-health checks open incidents independently of Juju workload status, since a workload can be functionally broken while Juju still reports `active`. See [Health model](#health-model).
 - **Kubernetes state durability** — persist incidents and usage across pod replacement via Juju unit state, which needs no volume, and consider Juju storage or a PVC for generated reports, which are too large for unit state.
 - **External artifact sink** — forward the audit log and reports to Loki or object storage rather than relying on pod-local disk.
-- **Diagnostics plan for the Kubernetes charm** — the k8s `collect_context` already accepts a `diagnostics_plan` argument and ignores it, so pod collection is a fixed set with no plan-driven extensibility.
 - **Kubernetes per-cycle consolidation** — one controller connection and one pod index per monitoring cycle rather than per watched unit. See [Kubernetes monitoring cycle](#kubernetes-monitoring-cycle).
 - **Audit-log completeness** — write `still-unhealthy` and `incident-recovered` to `events.jsonl`, not only to the debug log.
 
