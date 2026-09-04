@@ -9,12 +9,14 @@ description: |
   model, collects bounded diagnostic context via kubectl, and writes structured
   incident reports. Optionally calls an AI provider for diagnosis suggestions.
 links:
-  contact: https://launchpad.net/~fe-team
-  documentation: https://github.com/ljupcovangelski/jaime
+  contact:
+    - ljupcho.vangelski@canonical.com
+    - gaetan.gouzi@canonical.com
+  documentation: https://github.com/canonical/jaime
   issues:
-    - https://github.com/ljupcovangelski/jaime/issues
+    - https://github.com/canonical/jaime/issues
   source:
-    - https://github.com/ljupcovangelski/jaime
+    - https://github.com/canonical/jaime
 
 version: "0.0.1"
 base: ubuntu@24.04
