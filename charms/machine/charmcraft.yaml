@@ -9,12 +9,14 @@ description: |
   Jaime is a Juju machine subordinate charm that observes related principal units,
   collects bounded diagnostic context, writes structured incident reports and optionally calls third party LLM for suggestion of fixes/troubleshooting
 links:
-  contact: https://launchpad.net/~fe-team
-  documentation: https://github.com/ljupcovangelski/jaime
+  contact:
+    - ljupcho.vangelski@canonical.com
+    - gaetan.gouzi@canonical.com
+  documentation: https://github.com/canonical/jaime
   issues:
-    - https://github.com/ljupcovangelski/jaime/issues
+    - https://github.com/canonical/jaime/issues
   source:
-    - https://github.com/ljupcovangelski/jaime
+    - https://github.com/canonical/jaime
 
 version: "0.0.7"
 requires:
